@@ -178,19 +178,27 @@ $:
 #    所以不启用；等真的把编码层换成 candle 后端时，把下面这段接进 main.push 的数组即可
 #    （多条 pipeline 会并发执行，互不影响）。
 #
-# 两条关键点，缺一不可（candle 官方 ci_cuda.yaml 也是这么写的）：
-#   ① 用 nvidia/cuda:*-devel 镜像拿到 nvcc —— **编译 CUDA 不需要物理显卡**，
-#      所以这条可以跑在普通节点上；只有「跑 GPU 测试」才需要 GPU 节点。
-#   ② 必须显式设 CUDA_COMPUTE_CAP。不设的话 candle 的构建依赖会 fallback 去调
-#      nvidia-smi 自动探测架构，在没有卡的机器上直接 panic。
+# ┌─ 关键认知：编译 CUDA 不需要 GPU ─────────────────────────────────────────┐
+# │ 只要有 nvcc（来自 *-devel 镜像）就能编出 CUDA 产物，普通 CPU 节点即可。  │
+# │ 需要显卡的只有两件事：① 在 CI 里跑 GPU 推理测试；② 运行产物。            │
+# │ 所以这里**必须用 cnb:arch:amd64**，不要用 cnb:arch:amd64:gpu ——         │
+# │ 后者是计费的 GPU 节点，对「只编译」是纯浪费。                            │
+# │ 参考：candle 官方 CI 也把 nvcc 的来源解耦成容器镜像（它租 GPU 机器只是  │
+# │ 为了跑测试，不是为了编译）。                                             │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# 另一条必须做的：显式设 CUDA_COMPUTE_CAP。不设的话 candle 的构建依赖
+# （cudaforge / bindgen_cuda）会 fallback 去调 nvidia-smi 探测架构，在没有卡的
+# 机器上直接 panic —— 这正是官方 issue「panic without nvidia-smi」。
 #
 #     - name: 构建（CUDA，compile-only）
 #       runner:
-#         tags: cnb:arch:amd64:gpu        # 48GB 显存的官方 GPU 节点；compile-only 时用 cnb:arch:amd64 也行
+#         tags: cnb:arch:amd64            # ★ 普通 CPU 节点；不要用 :gpu 后缀（计费）
 #       docker:
-#         image: nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+#         image: nvidia/cuda:13.0.2-devel-ubuntu24.04   # 不带 cudnn 的 devel 变体，镜像小一截；
+#                                                      # 若 candle 启用了 cudnn feature，再换 *-cudnn-devel
 #       env:
-#         CUDA_COMPUTE_CAP: "89"          # RTX 4060 是 Ada(sm_89)；安培用 86，图灵用 75
+#         CUDA_COMPUTE_CAP: "89"          # RTX 4060 = Ada = sm_89；安培 86，图灵 75，PTX 向前兼容
 #       stages:
 #         - name: 前端构建
 #           script: |
@@ -205,3 +213,6 @@ $:
 #             . /root/.cargo/env
 #             cargo build --release --locked --features cuda
 #             ls -lh target/release/prompt-vault
+#
+# 补充：这个 devel 镜像约 7~8 GB，拉取本身耗时，所以建议**按需触发**
+# （打 tag 时、或临时解除注释验证一次），不要挂在每次 push 上。
