@@ -105,16 +105,24 @@ async fn main() {
     print_banner(&state, &flags);
 
     // ---- 启动自检：侧车 + 金标（开发文档 §9.4）----
-    let sidecar = state.encoder.health().await;
-    match &sidecar {
-        Some(h) => tracing::info!(
+    // mock 模式不去探真侧车，否则日志里会出现"侧车不可达"的误导性告警。
+    let sidecar = if state.encoder.mode() == EncoderMode::Mock {
+        tracing::info!("mock 编码器已启用：跳过侧车探测（本模式不加载任何模型）");
+        None
+    } else {
+        state.encoder.health().await
+    };
+    match (&sidecar, state.encoder.mode()) {
+        (Some(h), _) => tracing::info!(
             model = ?h.model,
             device = ?h.device,
             dim = ?h.dim,
             fingerprint = ?h.fingerprint,
             "侧车就绪"
         ),
-        None => tracing::warn!(
+        // mock 模式本来就不需要侧车，这里不打告警
+        (None, EncoderMode::Mock) => {}
+        (None, _) => tracing::warn!(
             url = %state.cfg.encoder_url,
             error = ?state.encoder.last_error(),
             "侧车不可达：检索与编码会返回 503；服务照常启动（DEGRADED）"

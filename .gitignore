@@ -22,3 +22,6 @@ pytorch_model*.bin
 # 杂项
 *.log
 .env
+
+# CI 本地模拟产物
+/dist-artifacts/

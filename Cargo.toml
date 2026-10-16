@@ -7,7 +7,13 @@ description = "本地提示词 / 图片资产库：Salvo 主服务 + Qdrant Edge
 
 [dependencies]
 # --- HTTP 层（开发文档 §0：Salvo 1.0.1）---
-salvo = { version = "1.0.1", features = ["full"] }
+# 刻意不用 `full`：它会拖进 openssl / native-tls / aws-lc-rs，
+# 既用不上（服务只监听 127.0.0.1 走明文 HTTP），又会让 Windows 交叉编译直接卡死
+# （openssl-sys 找不到目标平台的 OpenSSL）。这里只留真正用到的 feature。
+salvo = { version = "1.0.1", default-features = false, features = [
+    "server", "http1", "http2", "affix-state", "serve-static",
+    "fix-http1-request-uri", "matched-path",
+] }
 tokio = { version = "1", features = ["full"] }
 
 # --- 元数据（开发文档 §8：rusqlite bundled）---
@@ -19,7 +25,8 @@ qdrant-edge = "0.8.0"
 # --- 序列化 / 客户端 ---
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "http2", "system-proxy"] }
+# 只跟本机侧车通信（http://127.0.0.1:8917），不需要任何 TLS 栈 —— 同样是为了交叉编译
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 # --- 资产处理 ---
 image = "0.25"

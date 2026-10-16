@@ -1,0 +1,207 @@
+# prompt-vault 云原生构建（CNB）流水线
+#
+# ┌─ 读这份配置前先记住一条铁律 ─────────────────────────────────────────────┐
+# │ 前端必须在 Rust 之前构建。                                               │
+# │ 原因：前端产物是用 rust-embed 在**编译期**嵌进二进制的，顺序反了不会报错 │
+# │ （build.rs 会写一个占位页兜底），只会静默产出一个「打开是占位页」的二进制。│
+# │ 所以下面每个流水线的 stage 顺序都是「前端 → Rust → 测试 → 冒烟」。       │
+# └──────────────────────────────────────────────────────────────────────────┘
+
+# ---------------------------------------------------------------- 主分支 / PR
+main:
+  push:
+    - name: 构建与测试（Linux + Windows 交叉编译）
+      runner:
+        # CNB 官方 amd64 节点；本项目不需要 GPU（不跑模型）
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        # 用 ci/Dockerfile 现建环境镜像（Node 22 + Rust 1.99 + mingw-w64）
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+          versionBy:
+            - ci/Dockerfile
+        # 缓存：cargo 依赖与编译产物、pnpm store。均走默认的 copy-on-write，可并发构建。
+        # 注意：卷路径之间不能有包含关系，所以 registry 与 git 分开声明。
+        # 另外 volumes 是 docker 的子字段（不是 pipeline 级字段），放错层级 schema 会直接拒绝。
+        volumes:
+          - /usr/local/cargo/registry
+          - /usr/local/cargo/git
+          - ./target
+          - /root/.local/share/pnpm/store
+      stages:
+        - name: 环境自检
+          script: |
+            set -eu
+            echo "工作目录: $(pwd)"
+            node --version
+            pnpm --version
+            rustc --version
+            cargo --version
+            x86_64-w64-mingw32-gcc --version | head -1
+
+        - name: 前端构建
+          script: |
+            set -eu
+            cd web
+            pnpm install --frozen-lockfile
+            pnpm build
+            test -f dist/index.html
+            echo "web/dist 体积: $(du -sh dist | cut -f1)"
+
+        - name: Rust 构建（Linux x86_64）
+          script: |
+            set -eu
+            cargo build --release --locked
+            ls -lh target/release/prompt-vault
+
+        - name: 测试
+          script: |
+            set -eu
+            # Qdrant Edge PoC 七步 / 量化档位 / 以图搜图回归，全部纯 CPU 且不需要模型
+            cargo test --release --locked -- --test-threads=1
+
+        - name: Windows 交叉编译
+          script: |
+            set -eu
+            cargo build --release --locked --target x86_64-pc-windows-gnu
+            ls -lh target/x86_64-pc-windows-gnu/release/prompt-vault.exe
+
+        - name: 端到端冒烟
+          script: |
+            set -eu
+            # 用 mock 编码器起服务（不加载任何模型），验证：
+            #   ① 二进制能启动  ② /api/health 正常  ③ 首页是**真前端**而不是占位页
+            ./target/release/prompt-vault --encoder mock --port 18918 --data-dir /tmp/pv-smoke &
+            SERVER_PID=$!
+            trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:18918/api/health > /tmp/health.json 2>/dev/null; then break; fi
+              sleep 1
+            done
+            grep -q '"status"' /tmp/health.json
+            curl -fsS http://127.0.0.1:18918/ | grep -q 'assets/'
+            echo "✓ 服务可启动，health 正常，前端产物确实内嵌"
+            jq -c '{status, encoder_mode: .encoder.mode, sparse: .index.sparse_enabled, quant: .index.quantization}' /tmp/health.json
+
+        - name: 产物摘要
+          script: |
+            set -eu
+            mkdir -p dist-artifacts
+            cp target/release/prompt-vault dist-artifacts/
+            cp target/x86_64-pc-windows-gnu/release/prompt-vault.exe dist-artifacts/
+            cd dist-artifacts
+            sha256sum prompt-vault prompt-vault.exe | tee SHA256SUMS
+            ls -lh
+
+# ---------------------------------------------------------------- 打 Tag 时发布
+# 推一个 tag（如 v0.1.0）→ 构建双平台产物 → 创建 Release → 把两个二进制挂成附件。
+# 附件插件要求「tag 需有对应的 release 才能上传附件」，所以创建 Release 必须在附件步骤之前。
+$:
+  tag_push:
+    - name: 发布 Release
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+          versionBy:
+            - ci/Dockerfile
+        volumes:
+          - /usr/local/cargo/registry
+          - /usr/local/cargo/git
+          - ./target
+          - /root/.local/share/pnpm/store
+      stages:
+        - name: 前端构建
+          script: |
+            set -eu
+            cd web
+            pnpm install --frozen-lockfile
+            pnpm build
+            test -f dist/index.html
+
+        - name: 双平台构建
+          script: |
+            set -eu
+            cargo build --release --locked
+            cargo build --release --locked --target x86_64-pc-windows-gnu
+
+        - name: 测试
+          script: |
+            set -eu
+            cargo test --release --locked -- --test-threads=1
+
+        - name: 组装产物
+          script: |
+            set -eu
+            mkdir -p release-assets
+            cp target/release/prompt-vault release-assets/prompt-vault-linux-x86_64
+            cp target/x86_64-pc-windows-gnu/release/prompt-vault.exe release-assets/prompt-vault-windows-x86_64.exe
+            cd release-assets
+            sha256sum prompt-vault-linux-x86_64 prompt-vault-windows-x86_64.exe > SHA256SUMS
+            cat SHA256SUMS
+            ls -lh
+
+        - name: 创建 Release
+          type: git:release
+          options:
+            tag: $CNB_BRANCH
+            overlying: true
+            description: |
+              prompt-vault $CNB_BRANCH
+
+              产物（均不含模型权重，按开发文档 §10 铁律 8）：
+              - prompt-vault-linux-x86_64
+              - prompt-vault-windows-x86_64.exe
+
+              运行：`./prompt-vault --encoder mock`（不跑模型的链路验证）
+              或指向编码侧车：`--encoder-url http://127.0.0.1:8917`
+
+        - name: 上传附件
+          image: cnbcool/attachments:latest
+          settings:
+            type: UPLOAD
+            attachments:
+              - release-assets/prompt-vault-linux-x86_64
+              - release-assets/prompt-vault-windows-x86_64.exe
+              - release-assets/SHA256SUMS
+
+# ---------------------------------------------------------------- CUDA 变体模板
+#
+# ⚠️ 现在是**注释状态**：本项目当前还没有引入 candle，编出来的也是不含 CUDA 的普通二进制，
+#    所以不启用；等真的把编码层换成 candle 后端时，把下面这段接进 main.push 的数组即可
+#    （多条 pipeline 会并发执行，互不影响）。
+#
+# 两条关键点，缺一不可（candle 官方 ci_cuda.yaml 也是这么写的）：
+#   ① 用 nvidia/cuda:*-devel 镜像拿到 nvcc —— **编译 CUDA 不需要物理显卡**，
+#      所以这条可以跑在普通节点上；只有「跑 GPU 测试」才需要 GPU 节点。
+#   ② 必须显式设 CUDA_COMPUTE_CAP。不设的话 candle 的构建依赖会 fallback 去调
+#      nvidia-smi 自动探测架构，在没有卡的机器上直接 panic。
+#
+#     - name: 构建（CUDA，compile-only）
+#       runner:
+#         tags: cnb:arch:amd64:gpu        # 48GB 显存的官方 GPU 节点；compile-only 时用 cnb:arch:amd64 也行
+#       docker:
+#         image: nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+#       env:
+#         CUDA_COMPUTE_CAP: "89"          # RTX 4060 是 Ada(sm_89)；安培用 86，图灵用 75
+#       stages:
+#         - name: 前端构建
+#           script: |
+#             set -eu
+#             apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config cmake git
+#             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+#             . /root/.cargo/env
+#             cd web && pnpm install --frozen-lockfile && pnpm build
+#         - name: CUDA 构建
+#           script: |
+#             set -eu
+#             . /root/.cargo/env
+#             cargo build --release --locked --features cuda
+#             ls -lh target/release/prompt-vault
