@@ -1,0 +1,116 @@
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  background: #f5f5f5;
+}
+
+/* ---------- 资产网格 ---------- */
+.pv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 16px;
+}
+
+.pv-card-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: #fafafa;
+  cursor: pointer;
+}
+
+.pv-card-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* nsfw 默认模糊占位：点击后由组件移除该类 */
+.pv-blur {
+  filter: blur(16px);
+  transform: scale(1.06);
+  transition: filter 0.2s ease;
+}
+
+.pv-blur-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff;
+  font-size: 13px;
+  user-select: none;
+}
+
+.pv-cover-badges {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.pv-meta-line {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 分布条形图 ---------- */
+.pv-bar-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 140px) 1fr minmax(56px, auto);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.pv-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.pv-bar-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+  text-align: right;
+}
+
+.pv-pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.pv-header-fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}

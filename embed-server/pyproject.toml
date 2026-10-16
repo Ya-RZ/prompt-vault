@@ -1,0 +1,33 @@
+[project]
+name = "pv-embed-server"
+version = "0.1.0"
+description = "prompt-vault 编码侧车：官方 Qwen3VLEmbedder + FastAPI，向量与官方参考实现一致"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # --- HTTP 层 ---
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "prometheus-client>=0.20",
+    # --- 官方推理栈（对齐 QwenLM/Qwen3-VL-Embedding 的 pyproject）---
+    # 刻意不装 decord / opencv-python-headless / datasets / matplotlib / ipykernel：
+    # 那些是视频与训练用的，本服务只做图文。decord 在 Windows 上只有 py3-none 空壳包。
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "transformers>=4.57.3",
+    "accelerate>=1.12.0",
+    "qwen-vl-utils>=0.0.14",
+    "pillow>=10",
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+# CUDA 版 torch 只在 PyPI 之外的源上有；用 uv 的显式索引绑定这两个包。
+# 换 CUDA 版本时，改这里 + setup.ps1 里同一处 URL 即可（cu126 / cu128 / cu129 都有 2.8.0 的 Windows wheel）。
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }

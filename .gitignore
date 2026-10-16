@@ -1,0 +1,24 @@
+# 模型权重：4.0 GB，绝不入库（开发文档 §3 / §10 铁律 8）
+/kit/models/
+/embed-server/models/
+*.safetensors
+*.gguf
+pytorch_model*.bin
+
+# 运行期数据
+/media/
+/data/
+/target/
+
+# Python 侧车（禁改，也不入版本控制）
+/embed-server/.venv/
+**/__pycache__/
+*.pyc
+
+# 前端
+/web/node_modules/
+/web/dist/
+
+# 杂项
+*.log
+.env

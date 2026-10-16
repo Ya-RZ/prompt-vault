@@ -1,0 +1,49 @@
+[package]
+name = "prompt-vault"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+description = "本地提示词 / 图片资产库：Salvo 主服务 + Qdrant Edge 混合检索 + Ant Design v6 前端"
+
+[dependencies]
+# --- HTTP 层（开发文档 §0：Salvo 1.0.1）---
+salvo = { version = "1.0.1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+
+# --- 元数据（开发文档 §8：rusqlite bundled）---
+rusqlite = { version = "0.40", features = ["bundled", "serde_json"] }
+
+# --- 向量存储 + 检索（开发文档 §6：qdrant-edge 0.8.0，唯一索引）---
+qdrant-edge = "0.8.0"
+
+# --- 序列化 / 客户端 ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "http2", "system-proxy"] }
+
+# --- 资产处理 ---
+image = "0.25"
+sha2 = "0.10"
+hex = "0.4"
+walkdir = "2"
+base64 = "0.23"
+
+# --- 工具 ---
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+
+# --- 前端产物打包进二进制（开发文档 §0：构建产物由 Rust 侧 embed）---
+rust-embed = { version = "8", features = ["include-exclude"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
