@@ -89,8 +89,11 @@ jobs:
           # 钉 12.4：更新的 nvcc 与 candle-kernels 0.11 有兼容报告
           cuda: "12.4.0"
           method: network
-          # 只需要编译器与运行库；cuDNN 走 Cargo 的可选 feature
-          sub-packages: '["nvcc", "cudart", "cublas", "curand", "thrust"]'
+          # 刻意**不限制 sub-packages**（装完整 toolkit）。
+          # 之前只装了 nvcc/cudart/cublas/curand/thrust，结果链接时缺 nvrtc.lib：
+          #   LINK : fatal error LNK1181: cannot open input file 'nvrtc.lib'
+          # candle 的 CUDA 后端需要 nvrtc（运行时编译 kernel）。与其逐个猜包名，
+          # 不如整包装上；代价是多下几 GB，换来一次跑通。
 
       - name: 回显 CUDA 环境
         run: |
