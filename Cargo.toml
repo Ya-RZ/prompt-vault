@@ -30,7 +30,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 # --- 进程内编码（candle 后端，替代 Python 侧车；不引入 ONNX）---
 # qwen3: candle 实现的 Qwen3-VL 多模态编码；hf-hub: 用它提供的缓存目录解析（离线可控）
-fastembed = { version = "7.1.1", default-features = false, features = ["qwen3", "hf-hub"] }
+# ort-load-dynamic: fastembed 会无条件引入 `ort`(ONNX Runtime)，即使我们只用 candle 后端。
+#   不加这个 feature 时，链接期会要求 onnxruntime 的符号，Windows 上直接
+#   LNK2019: unresolved external symbol OrtGetApiBase / LNK1120。
+#   动态加载后只有真正调用 ONNX 路径时才需要 onnxruntime.dll —— 我们从不调用。
+fastembed = { version = "7.1.1", default-features = false, features = ["qwen3", "hf-hub", "ort-load-dynamic"] }
 # fastembed 的 Qwen3VLEmbedding 接口签名里出现 candle 的 Device/DType，需要同版本直接依赖
 candle-core = "0.11"
 
