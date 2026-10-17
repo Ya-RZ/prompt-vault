@@ -1,0 +1,122 @@
+# Windows + CUDA 构建（GitHub Actions）
+#
+# 为什么需要这个 workflow：从 Linux 交叉编译 Windows CUDA 是做不到的
+# —— nvcc 在 Windows 上必须用 MSVC 作为 host compiler，而 MSVC 跑不了 Linux。
+# 所以 Windows 的 CUDA 版只能在 Windows 上原生编译。
+#
+# 成本：本仓库是 public 时，GitHub 标准的 windows-latest runner **免费且不扣分钟**；
+# 私有仓库则按 Windows 的 ×2 倍率消耗免费额度（Free 计划 2000 分钟/月 ≈ 1000 分钟 Windows）。
+# GPU runner（larger runner）不在免费范围，但本 workflow **不需要 GPU** ——
+# 编译 CUDA 只要有 nvcc，跑才需要卡。
+#
+# 两个已知坑（都是官方 issue）：
+#   1. candle/kernels 与过新的 nvcc 有兼容问题（huggingface/candle#3737，
+#      RTX 20xx + nvcc 12.9 编译失败）→ 这里钉 CUDA 12.4，别盲目用最新。
+#   2. bindgen_cuda 不查 PATH（huggingface/candle#3166）→ 显式依赖 cuda-toolkit action
+#      设置的 CUDA_PATH，并在下面回显一次以便排错。
+
+name: windows-cuda
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "web/**"
+      - "build.rs"
+      - ".github/workflows/windows-cuda.yml"
+
+concurrency:
+  group: windows-cuda-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # 目标卡的算力：RTX 4060 是 Ada = sm_89；30 系 Ampere 用 86；20 系 Turing 用 75。
+      # 不设的话 candle 的构建脚本会 fallback 去调 nvidia-smi，在无卡 runner 上直接 panic。
+      CUDA_COMPUTE_CAP: "89"
+      CARGO_TERM_COLOR: always
+      # 打印完整错误，方便定位 candle 编译问题
+      RUST_BACKTRACE: "1"
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust（MSVC 工具链）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # cuda feature 会编译 candle 的 kernel，缓存命中率直接影响耗时
+          shared-key: windows-cuda
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装 pnpm（与 lockfile 对齐）
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.8.1 --activate
+          pnpm --version
+
+      - name: 安装 CUDA Toolkit
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.20
+        with:
+          # 钉 12.4：更新的 nvcc 与 candle-kernels 0.11 有兼容报告
+          cuda: "12.4.0"
+          method: network
+          # 只需要编译器与运行库；cuDNN 走 Cargo 的可选 feature
+          sub-packages: '["nvcc", "cudart", "cublas", "curand", "thrust"]'
+
+      - name: 回显 CUDA 环境
+        run: |
+          echo "CUDA_PATH=$env:CUDA_PATH"
+          nvcc --version
+          echo "CUDA_COMPUTE_CAP=$env:CUDA_COMPUTE_CAP"
+
+      - name: 前端构建（必须早于 cargo build）
+        # rust-embed 在编译期把 web/dist 打进二进制；顺序反了会静默产出占位页
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
+          if (-Not (Test-Path "dist/index.html")) { throw "web/dist/index.html 不存在" }
+
+      - name: 构建（CUDA）
+        run: cargo build --release --locked --features cuda
+
+      - name: 冒烟（只验证能启动，不加载模型）
+        # 不设 --encoder candle，避免在 CI 里加载 4.2 GB 权重；这里只确认二进制结构完整
+        run: |
+          .\target\release\prompt-vault.exe --help
+          if (-Not (Test-Path ".\target\release\prompt-vault.exe")) { throw "产物不存在" }
+
+      - name: 收集产物
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\prompt-vault.exe dist\prompt-vault-windows-x86_64-cuda.exe
+          (Get-FileHash dist\prompt-vault-windows-x86_64-cuda.exe -Algorithm SHA256).Hash |
+            Out-File -Encoding ascii dist\SHA256SUMS
+          Get-Content dist\SHA256SUMS
+          Get-Item dist\prompt-vault-windows-x86_64-cuda.exe | Select-Object Name, Length
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: prompt-vault-windows-x86_64-cuda
+          path: |
+            dist/prompt-vault-windows-x86_64-cuda.exe
+            dist/SHA256SUMS
+          if-no-files-found: error

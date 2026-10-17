@@ -143,6 +143,44 @@ main:
             echo "=== dist-artifacts ==="
             ls -la dist-artifacts 2>&1
 
+  # ------------------------------------------------------------ 手动同步到 GitHub
+  # 对应 .cnb/web_trigger.yml 里 `event: web_trigger_sync_github` 的「同步到 GitHub」按钮。
+  # 用 git-sync 插件的 **rebase 模式**：先 fetch + rebase 再推，不会覆盖 GitHub 上别人的提交。
+  #
+  # ⚠️ 需要你替换两处（不改就是死的）：
+  #   1. imports 指向你自己的 CNB 密钥仓库文件，里面至少要有：
+  #        GIT_USERNAME: <你的 GitHub 用户名>
+  #        GIT_EMAIL: <你的 GitHub 邮箱>
+  #        GITHUB_TOKEN: <有 repo 权限的 PAT>
+  #   2. settings.target_url 改成你的 GitHub 仓库地址
+  #
+  # 关于「屏蔽无用文件」：git-sync 同步的是 **git 对象**，不是工作区，
+  # 所以 .gitignore 里的东西（模型 4.2GB / data / target / node_modules / web/dist / download）
+  # 天然不会被带过去 —— 前提是它们从来没被提交过。当前仓库满足这个前提。
+  web_trigger_sync_github:
+    - name: 同步到 GitHub（rebase）
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      imports:
+        # TODO: 换成你的密钥仓库地址
+        - https://cnb.cool/yaorz/rust/secret/-/blob/main/github.yml
+      stages:
+        - name: 同步到 GitHub
+          image: tencentcom/git-sync
+          settings:
+            # TODO: 换成你的 GitHub 仓库
+            target_url: https://github.com/yaorz/prompt-vault.git
+            auth_type: https
+            username: ${GIT_USERNAME}
+            password: ${GITHUB_TOKEN}
+            git_user: ${GIT_USERNAME}
+            git_email: ${GIT_EMAIL}
+            branch: main
+            # rebase：保留 GitHub 侧的提交，把 CNB 的新提交 rebase 上去
+            sync_mode: rebase
+
+
   # ------------------------------------------------------------ 手动触发（按钮）
   # 对应 .cnb/web_trigger.yml 里 `event: web_trigger_build` 的那个「手动编译」按钮。
   # 只做编译：前端 → Rust（按参数选平台）→ 可选测试 → 产物摘要。

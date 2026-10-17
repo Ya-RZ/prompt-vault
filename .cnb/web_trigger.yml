@@ -41,3 +41,7 @@ branch:
                 value: "true"
               - name: 跳过
                 value: "false"
+      - name: 同步到 GitHub
+        description: 用 rebase 把当前 main 同步到 GitHub（不覆盖对方的手动修改）
+        event: web_trigger_sync_github
+        groupName: 同步

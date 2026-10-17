@@ -53,6 +53,14 @@ chrono = "0.4"
 # --- 前端产物打包进二进制（开发文档 §0：构建产物由 Rust 侧 embed）---
 rust-embed = { version = "8", features = ["include-exclude"] }
 
+[features]
+# 进程内编码的 GPU 加速。默认**关闭**：本机与 CNB 的普通节点都没有 CUDA Toolkit，
+# 只有 GitHub Actions 的 Windows CUDA job 才会带 --features cuda 构建。
+# 打开后 candle 会编译 CUDA kernel，需要 nvcc + CUDA_COMPUTE_CAP（见 .github/workflows/windows-cuda.yml）。
+cuda = ["fastembed/cuda", "candle-core/cuda"]
+# cuDNN 加速（可选；candle issue #3737 提示新 nvcc 版本可能编译失败，按需再开）
+cudnn = ["fastembed/cudnn", "candle-core/cudnn", "cuda"]
+
 [dev-dependencies]
 tempfile = "3"
 
