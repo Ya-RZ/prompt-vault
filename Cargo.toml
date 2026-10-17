@@ -28,6 +28,12 @@ serde_json = "1"
 # 只跟本机侧车通信（http://127.0.0.1:8917），不需要任何 TLS 栈 —— 同样是为了交叉编译
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
+# --- 进程内编码（candle 后端，替代 Python 侧车；不引入 ONNX）---
+# qwen3: candle 实现的 Qwen3-VL 多模态编码；hf-hub: 用它提供的缓存目录解析（离线可控）
+fastembed = { version = "7.1.1", default-features = false, features = ["qwen3", "hf-hub"] }
+# fastembed 的 Qwen3VLEmbedding 接口签名里出现 candle 的 Device/DType，需要同版本直接依赖
+candle-core = "0.11"
+
 # --- 资产处理 ---
 image = "0.25"
 sha2 = "0.10"

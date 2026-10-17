@@ -25,3 +25,6 @@ pytorch_model*.bin
 
 # CI 本地模拟产物
 /dist-artifacts/
+
+# 临时下载服务用的产物目录（不入库）
+/download/

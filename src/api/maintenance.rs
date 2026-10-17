@@ -50,7 +50,7 @@ pub async fn vector_export(req: &mut Request, depot: &mut Depot, res: &mut Respo
     let path = body
         .get("path")
         .and_then(|v| v.as_str())
-        .map(|s| std::path::PathBuf::from(s))
+        .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             state
                 .cfg

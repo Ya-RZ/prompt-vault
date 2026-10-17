@@ -404,7 +404,7 @@ async fn run_encode(
     let index_fp = state.index_fingerprint().unwrap_or(None);
     let mut done = 0i64;
     let mut failed = 0i64;
-    let mut skipped = 0i64;
+    let skipped = 0i64;
 
     // ---- 资产（图片/视频封面）----
     let assets = if let Some(ids) = params.asset_ids.as_ref() {

@@ -13,6 +13,7 @@ const ASSET_COLS: &str = "id, kind, rel_path, bytes, width, height, duration_ms,
 impl Db {
     // ------------------------------------------------------------ 资产
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_asset(
         &self,
         kind: &str,
@@ -688,6 +689,7 @@ impl Db {
     // ------------------------------------------------------------ 纯词法检索（零模型成本路径）
 
     /// 路径 / 提示词 / 标签三处模糊命中。开发文档 §1：这条路径不需要模型。
+    #[allow(clippy::type_complexity)]
     pub fn lexical_search(&self, q: &str, k: usize) -> ApiResult<Vec<(i64, String, String, String, f64)>> {
         let like = format!("%{}%", q.trim());
         self.with_conn(|c| {

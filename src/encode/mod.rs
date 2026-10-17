@@ -8,7 +8,7 @@
 //! 另内置一个开发用 **mock 编码器**（`PV_ENCODER=mock`）：不加载任何模型，
 //! 用 deterministic 伪向量跑通「导入→编码→入库→检索→前端」全链路。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use qdrant_edge::external::serde_json as _;
@@ -20,20 +20,27 @@ use crate::types::{
     EmbedInputItem, EmbedItem, EmbedRequest, EmbedResponse, GoldenInfo, SidecarHealth,
 };
 
+pub mod candle;
+
+pub use candle::{CandleEncoder, MAX_PIXELS};
+
 pub const MOCK_FINGERPRINT: &str = "mock|dim=2048|v1|device=cpu";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncoderMode {
-    /// 真侧车
+    /// 真侧车（HTTP）
     Live,
     /// 内置假编码器（不运行模型）
     Mock,
+    /// 进程内 candle（直接加载 Qwen3-VL-Embedding-2B，替代 Python 侧车）
+    Candle,
 }
 
 impl EncoderMode {
     pub fn parse(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
-            "mock" | "fake" | "offline" => EncoderMode::Mock,
+            "mock" | "fake" => EncoderMode::Mock,
+            "candle" | "local" | "inproc" | "rust" => EncoderMode::Candle,
             _ => EncoderMode::Live,
         }
     }
@@ -42,6 +49,7 @@ impl EncoderMode {
         match self {
             EncoderMode::Live => "live",
             EncoderMode::Mock => "mock",
+            EncoderMode::Candle => "candle",
         }
     }
 }
@@ -61,6 +69,8 @@ pub struct EncoderClient {
     base: String,
     mode: EncoderMode,
     dim: usize,
+    /// candle 模式下的进程内编码器（懒加载，第一次编码才 mmap 权重）
+    candle: Option<Arc<CandleEncoder>>,
     /// 最近一次看到的侧车信息（health 或 embeddings 响应里的）
     last_health: Mutex<Option<SidecarHealth>>,
     last_error: Mutex<Option<String>>,
@@ -68,7 +78,12 @@ pub struct EncoderClient {
 }
 
 impl EncoderClient {
-    pub fn new(base: impl Into<String>, mode: EncoderMode, dim: usize) -> Self {
+    pub fn new(
+        base: impl Into<String>,
+        mode: EncoderMode,
+        dim: usize,
+        candle: Option<Arc<CandleEncoder>>,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(1800))
             .connect_timeout(Duration::from_secs(5))
@@ -79,6 +94,7 @@ impl EncoderClient {
             base: base.into(),
             mode,
             dim,
+            candle,
             last_health: Mutex::new(None),
             last_error: Mutex::new(None),
             last_checked_at: Mutex::new(None),
@@ -87,6 +103,11 @@ impl EncoderClient {
 
     pub fn mode(&self) -> EncoderMode {
         self.mode
+    }
+
+    /// candle 后端（None 表示当前不是 candle 模式或没配模型目录）
+    pub fn candle_encoder(&self) -> Option<Arc<CandleEncoder>> {
+        self.candle.clone()
     }
 
     pub fn base(&self) -> &str {
@@ -101,6 +122,11 @@ impl EncoderClient {
     pub fn fingerprint_hint(&self) -> String {
         match self.mode {
             EncoderMode::Mock => MOCK_FINGERPRINT.to_string(),
+            EncoderMode::Candle => self
+                .candle
+                .as_ref()
+                .map(|c| c.fingerprint())
+                .unwrap_or_else(|| "candle|unconfigured".to_string()),
             EncoderMode::Live => self
                 .last_health
                 .lock()
@@ -168,9 +194,20 @@ impl EncoderClient {
         if input.is_empty() {
             return Ok(Vec::new());
         }
-        // 写入前记录用的指纹：mock 模式固定；live 模式需要先知道侧车指纹
+        // mock：确定性伪向量；candle：进程内推理（放阻塞线程，避免卡住 async 运行时）
         if self.mode == EncoderMode::Mock {
             return Ok(input.iter().map(|item| self.mock_encode(item)).collect());
+        }
+        if self.mode == EncoderMode::Candle {
+            let encoder = self
+                .candle
+                .as_ref()
+                .ok_or_else(|| ApiError::encoder_error("candle 后端未初始化（缺少模型目录）"))?
+                .clone();
+            let payload = input.clone();
+            return tokio::task::spawn_blocking(move || encoder.embed_blocking(&payload))
+                .await
+                .map_err(|e| ApiError::encoder_error(format!("编码线程异常: {e}")))?;
         }
 
         let url = format!("{}/v1/embeddings", self.base.trim_end_matches('/'));
@@ -235,6 +272,23 @@ impl EncoderClient {
     /// 金标校验（开发文档 §9）。侧车没有 `/v1/verify` → `unsupported`。
     pub async fn verify_golden(&self) -> GoldenInfo {
         let checked_at = crate::db::now_rfc3339();
+        if self.mode == EncoderMode::Candle {
+            return GoldenInfo {
+                status: "unsupported".into(),
+                passed: None,
+                checked_at: Some(checked_at),
+                detail: Some(
+                    "candle 后端没有历史基线（它与 Python 实现不同源，基线也不通用）；\
+                     换后端后必须全量重编码，指纹闸门会拦住混用"
+                        .into(),
+                ),
+                cos_text: None,
+                cos_image: None,
+                threshold: None,
+                device_mismatch: false,
+                encoded_device: Some("cpu".into()),
+            };
+        }
         if self.mode == EncoderMode::Mock {
             return GoldenInfo {
                 status: "unsupported".into(),
@@ -433,21 +487,56 @@ pub fn health_snapshot(
     sidecar: Option<SidecarHealth>,
 ) -> crate::types::EncoderInfo {
     let mode = client.mode();
-    let dim = sidecar.as_ref().and_then(|h| h.dim).unwrap_or(client.dim() as i64);
+    let dim = sidecar
+        .as_ref()
+        .and_then(|h| h.dim)
+        .unwrap_or(client.dim() as i64);
+
+    // candle：进程内后端，没有 HTTP 侧车可探；可用性看模型目录是否解析成功
+    let candle = client.candle_encoder();
+    let candle_ready = mode == EncoderMode::Candle
+        && candle
+            .as_ref()
+            .map(|c| candle::looks_like_model_dir_public(c.model_dir()))
+            .unwrap_or(false);
+
+    let reachable = match mode {
+        EncoderMode::Mock => true,
+        EncoderMode::Candle => candle_ready,
+        EncoderMode::Live => sidecar.is_some(),
+    };
+
     crate::types::EncoderInfo {
-        reachable: mode == EncoderMode::Mock || sidecar.is_some(),
-        url: client.base().to_string(),
+        reachable,
+        url: match mode {
+            EncoderMode::Candle => format!("in-process:candle://{}", candle.as_ref().map(|c| c.model_dir().display().to_string()).unwrap_or_default()),
+            _ => client.base().to_string(),
+        },
         model: sidecar
             .as_ref()
             .and_then(|h| h.model.clone())
-            .or_else(|| (mode == EncoderMode::Mock).then(|| "mock".to_string())),
+            .or_else(|| match mode {
+                EncoderMode::Mock => Some("mock".to_string()),
+                EncoderMode::Candle => Some(candle::MODEL_REPO_ID.to_string()),
+                EncoderMode::Live => None,
+            }),
         device: sidecar
             .as_ref()
             .and_then(|h| h.device.clone())
-            .or_else(|| (mode == EncoderMode::Mock).then(|| "cpu".to_string())),
+            .or_else(|| match mode {
+                EncoderMode::Mock | EncoderMode::Candle => Some("cpu".to_string()),
+                EncoderMode::Live => None,
+            }),
         dim: Some(dim),
-        model_dir,
-        max_pixels: sidecar.as_ref().and_then(|h| h.max_pixels),
+        model_dir: model_dir.or_else(|| {
+            candle
+                .as_ref()
+                .map(|c| c.model_dir().display().to_string())
+        }),
+        max_pixels: sidecar
+            .as_ref()
+            .and_then(|h| h.max_pixels)
+            .or_else(|| (mode == EncoderMode::Candle).then_some(candle::MAX_PIXELS)),
         max_length: sidecar.as_ref().and_then(|h| h.max_length),
         template_overhead: sidecar.as_ref().and_then(|h| h.template_overhead),
         fingerprint: Some(client.fingerprint_hint()),

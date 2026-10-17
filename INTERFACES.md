@@ -86,6 +86,29 @@ GET  /metrics                             → Prometheus
 4. `413` 原样透出为 `PAYLOAD_TOO_LARGE`，`detail` 带 `plan`。
 5. 侧车的 `max_pixels` / `max_length` 等不进主服务配置，只从指纹里读，避免两处配置漂移。
 
+### 1.4 进程内 candle 后端（`--encoder candle`）
+
+编码不再必须经过 HTTP 侧车：`--encoder candle` 时由主服务**在进程内**用 candle 加载
+`Qwen3-VL-Embedding-2B`（fastembed 7.1.1 的 `Qwen3VLEmbedding`）。
+
+| 项 | 行为 |
+| --- | --- |
+| 权重加载 | `VarBuilder::from_mmaped_safetensors`，4.2 GB 权重 mmap 进内存，不复制 |
+| 加载时机 | **懒加载**：第一次编码时才加载（2B 模型加载要几十秒），启动只解析目录 |
+| 模型目录 | `--model-dir` / `PV_MODEL_DIR`（显式指定必须有效）→ `<exe目录>/models/qwen3-vl-embedding-2b` → `<cwd>/models/…` → `<cwd>/embed-server/models/…` → `<cwd>/../embed-server/models/…` |
+| 强制离线 | 把模型目录伪装成 HF 缓存（`<model_dir>/.hf-home/hub/models--Qwen--Qwen3-VL-Embedding-2B/snapshots/local/` + `refs/main`），并设 `HF_HOME` / `HF_HUB_OFFLINE=1`。缓存里除 `preprocessor_config.json` 用**改写副本**外，其余文件硬链接（跨设备时退回复制） |
+| max_pixels | 缓存副本里写 **1,843,200**（官方参考脚本口径）；原始模型文件不动，避免影响侧车 |
+| dtype | `--candle-dtype f32`（默认）/ `f16` / `bf16` |
+| 指纹 | `Qwen3-VL-Embedding-2B|candle|dtype=f32|dim=2048|pool=lasttoken|norm=L2|max_pixels=1843200|max_length=8192|backend=fastembed-7.1|device=cpu` |
+| 与侧车的关系 | **指纹必然不同** → 索引闸门（§9）会拒绝混用，换后端必须全量重编码 |
+
+**已知限制（不静默降级）**：
+
+1. **不支持图文混合输入**。`{text, image}` 同时出现的项直接返回 `400`，错误里带 `index`。（fastembed 的 `Qwen3VLEmbedding` 目前只实现 text-only / image-only；本项目的检索路径本就是 image / text 两个向量名分开存，不受影响。）
+2. **不回传 `resized` / `vision_tokens`**。这两个诊断字段只有侧车给，candle 版为 `null`。
+3. **不提供 sparse**。稀疏向量与编码器无关（本来就没由侧车提供），依旧走「索引启用稀疏 + 有 sparse 才用」的降级逻辑。
+4. **金标校验为 `unsupported`**。candle 与 Python 实现不同源，历史基线不通用。
+
 ---
 
 ## 2. 数据模型（SQLite，见 `migrations/0001_init.sql`）

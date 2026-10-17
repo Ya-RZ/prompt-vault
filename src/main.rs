@@ -35,9 +35,18 @@ struct Args {
     /// 编码侧车地址（Python FastAPI，本项目不修改它）
     #[arg(long, env = "PV_ENCODER_URL", default_value = "http://127.0.0.1:8917")]
     encoder_url: String,
-    /// live = 真侧车；mock = 内置假编码器（不运行模型，仅用于链路验证）
+    /// live = 真侧车（HTTP）；candle = 进程内 candle 直接加载模型；mock = 假编码器（不运行模型）
     #[arg(long, env = "PV_ENCODER", default_value = "live")]
     encoder: String,
+    /// candle 模式的模型目录；不指定则按约定路径查找（显式指定必须有效）
+    #[arg(long, env = "PV_MODEL_DIR")]
+    model_dir: Option<PathBuf>,
+    /// candle 权重精度：f32（默认，最稳）/ f16 / bf16
+    #[arg(long, env = "PV_CANDLE_DTYPE", default_value = "f32")]
+    candle_dtype: String,
+    /// candle 的序列长度上限（与侧车一致：8192）
+    #[arg(long, env = "PV_MAX_LENGTH", default_value_t = 8192)]
+    max_length: usize,
     /// 向量维度：本项目固定 2048 不截断（开发文档 §4.2）
     #[arg(long, env = "PV_DIM", default_value_t = 2048)]
     dim: usize,
@@ -90,6 +99,9 @@ async fn main() {
         quant: QuantMode::parse(&args.quant),
         encoder_url: args.encoder_url.clone(),
         encoder_mode: EncoderMode::parse(&args.encoder),
+        model_dir: args.model_dir.clone(),
+        candle_dtype: args.candle_dtype.clone(),
+        max_length: args.max_length,
         web_dir: args.web_dir.clone(),
         max_media_bytes: args.max_media_bytes,
     };
@@ -106,11 +118,17 @@ async fn main() {
 
     // ---- 启动自检：侧车 + 金标（开发文档 §9.4）----
     // mock 模式不去探真侧车，否则日志里会出现"侧车不可达"的误导性告警。
-    let sidecar = if state.encoder.mode() == EncoderMode::Mock {
-        tracing::info!("mock 编码器已启用：跳过侧车探测（本模式不加载任何模型）");
-        None
-    } else {
-        state.encoder.health().await
+    let sidecar = match state.encoder.mode() {
+        EncoderMode::Mock => {
+            tracing::info!("mock 编码器已启用：跳过侧车探测（本模式不加载任何模型）");
+            None
+        }
+        EncoderMode::Candle => {
+            let fp = state.encoder.fingerprint_hint();
+            tracing::info!(fingerprint = %fp, "candle 后端：跳过 HTTP 侧车探测（编码在进程内完成）");
+            None
+        }
+        EncoderMode::Live => state.encoder.health().await,
     };
     match (&sidecar, state.encoder.mode()) {
         (Some(h), _) => tracing::info!(
@@ -120,8 +138,8 @@ async fn main() {
             fingerprint = ?h.fingerprint,
             "侧车就绪"
         ),
-        // mock 模式本来就不需要侧车，这里不打告警
-        (None, EncoderMode::Mock) => {}
+        // mock / candle 本来就不需要 HTTP 侧车，这里不打告警
+        (None, EncoderMode::Mock) | (None, EncoderMode::Candle) => {}
         (None, _) => tracing::warn!(
             url = %state.cfg.encoder_url,
             error = ?state.encoder.last_error(),

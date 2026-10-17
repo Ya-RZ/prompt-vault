@@ -92,7 +92,7 @@ pub async fn search_image(req: &mut Request, depot: &mut Depot, res: &mut Respon
         }
         if let Some(b64) = body.get("image_base64").and_then(|v| v.as_str()) {
             let mime = body.get("mime").and_then(|v| v.as_str()).unwrap_or("image/jpeg");
-            let cleaned = b64.split(',').last().unwrap_or(b64).to_string();
+            let cleaned = b64.rsplit(',').next().unwrap_or(b64).to_string();
             data_url = Some(format!("data:{mime};base64,{cleaned}"));
             label = "<base64>".to_string();
         }
@@ -100,7 +100,7 @@ pub async fn search_image(req: &mut Request, depot: &mut Depot, res: &mut Respon
         // 兼容 form 表单里的 image_base64
         let b64 = req.query::<String>("image_base64");
         if let Some(b64) = b64 {
-            let cleaned = b64.split(',').last().unwrap_or(&b64).to_string();
+            let cleaned = b64.rsplit(',').next().unwrap_or(&b64).to_string();
             data_url = Some(format!("data:image/jpeg;base64,{cleaned}"));
             label = "<base64>".to_string();
         }

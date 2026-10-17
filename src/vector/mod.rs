@@ -212,6 +212,7 @@ impl VectorStore {
 
     /// 一个 asset 点：稠密（image 向量 + payload）
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_asset(
         &self,
         asset_id: i64,
@@ -245,6 +246,7 @@ impl VectorStore {
     }
 
     /// 一个 prompt 点：稠密（text 向量 + payload），带上它所属 asset
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_prompt(
         &self,
         prompt_id: i64,
