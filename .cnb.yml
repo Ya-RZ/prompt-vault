@@ -74,7 +74,9 @@ main:
           image: tencentcom/git-sync
           settings:
             # SSH 方式：地址必须是 git@host:owner/repo.git 形式
-            target_url: git@github.com:Ya-RZ/prompt-vault.git
+            # CNB 的构建节点连 github.com:22 会超时（实测卡 2m27s 后 Operation timed out），
+            # 所以改走 GitHub 的 SSH-over-443 端点。本机实测 ssh.github.com:443 是通的。
+            target_url: ssh://git@ssh.github.com:443/Ya-RZ/prompt-vault.git
             auth_type: ssh
             # SSH 私钥内容（不是路径）；由密钥仓库的 GITHUB_SSH_KEY 注入
             ssh_key: ${GITHUB_SSH_KEY}
