@@ -4,7 +4,7 @@
 # —— nvcc 在 Windows 上必须用 MSVC 作为 host compiler，而 MSVC 跑不了 Linux。
 # 所以 Windows 的 CUDA 版只能在 Windows 上原生编译。
 #
-# 成本：本仓库是 public 时，GitHub 标准的 windows-latest runner **免费且不扣分钟**；
+# 成本（2026 数据）：本仓库是 public 时，GitHub 标准的 windows-latest runner **免费且不扣分钟**；
 # 私有仓库则按 Windows 的 ×2 倍率消耗免费额度（Free 计划 2000 分钟/月 ≈ 1000 分钟 Windows）。
 # GPU runner（larger runner）不在免费范围，但本 workflow **不需要 GPU** ——
 # 编译 CUDA 只要有 nvcc，跑才需要卡。
