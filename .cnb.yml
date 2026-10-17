@@ -10,138 +10,41 @@
 # ---------------------------------------------------------------- 主分支 / PR
 main:
   push:
-    - name: 构建与测试（Linux + Windows 交叉编译）
+    # 推送时**只做代码检查**：不构建二进制、不跑测试、不做 Windows 交叉编译。
+    # 要产物请走：tag_push（发布）或「手动编译」按钮（web_trigger_build）。
+    #
+    # 注意：clippy 仍然需要编译全部依赖（candle 不小），缓存命中时约几分钟；
+    # 省掉的是 release 构建 + 测试 + Windows 交叉编译 + 冒烟这几段。
+    - name: 代码检查（clippy）
       runner:
-        # CNB 官方 amd64 节点；本项目不需要 GPU（不跑模型）
         tags: cnb:arch:amd64
         cpus: 8
       docker:
-        # 用 ci/Dockerfile 现建环境镜像（Node 22 + Rust 1.99 + mingw-w64）
         build:
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
           versionBy:
             - ci/Dockerfile
-        # 缓存：cargo 依赖与编译产物、pnpm store。均走默认的 copy-on-write，可并发构建。
-        # 注意：卷路径之间不能有包含关系，所以 registry 与 git 分开声明。
-        # 另外 volumes 是 docker 的子字段（不是 pipeline 级字段），放错层级 schema 会直接拒绝。
         volumes:
           - /usr/local/cargo/registry
           - /usr/local/cargo/git
           - ./target
-          - /root/.local/share/pnpm/store
       stages:
         - name: 环境自检
           script: |
             set -eu
             echo "工作目录: $(pwd)"
-            node --version
-            pnpm --version
             rustc --version
             cargo --version
-            x86_64-w64-mingw32-gcc --version | head -1
+            cargo clippy --version
 
-        - name: 前端构建
+        - name: clippy（-D warnings）
           script: |
             set -eu
-            cd web
-            pnpm install --frozen-lockfile
-            pnpm build
-            test -f dist/index.html
-            echo "web/dist 体积: $(du -sh dist | cut -f1)"
+            # 刻意不用 --all-features：那会打开 cuda，而普通节点没有 CUDA Toolkit
+            cargo clippy --all-targets --locked -- -D warnings
 
-        - name: Rust 构建（Linux x86_64）
-          script: |
-            set -eu
-            cargo build --release --locked
-            ls -lh target/release/prompt-vault
-
-        - name: 测试
-          script: |
-            set -eu
-            # Qdrant Edge PoC 七步 / 量化档位 / 以图搜图回归，全部纯 CPU 且不需要模型
-            cargo test --release --locked -- --test-threads=1
-
-        - name: Windows 交叉编译
-          script: |
-            set -eu
-            cargo build --release --locked --target x86_64-pc-windows-gnu
-            ls -lh target/x86_64-pc-windows-gnu/release/prompt-vault.exe
-
-        - name: 端到端冒烟
-          script: |
-            set -eu
-            # 用 mock 编码器起服务（不加载任何模型），验证：
-            #   ① 二进制能启动  ② /api/health 正常  ③ 首页是**真前端**而不是占位页
-            ./target/release/prompt-vault --encoder mock --port 18918 --data-dir /tmp/pv-smoke &
-            SERVER_PID=$!
-            trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
-            for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:18918/api/health > /tmp/health.json 2>/dev/null; then break; fi
-              sleep 1
-            done
-            grep -q '"status"' /tmp/health.json
-            curl -fsS http://127.0.0.1:18918/ | grep -q 'assets/'
-            echo "✓ 服务可启动，health 正常，前端产物确实内嵌"
-            jq -c '{status, encoder_mode: .encoder.mode, sparse: .index.sparse_enabled, quant: .index.quantization}' /tmp/health.json
-
-        - name: 产物摘要
-          script: |
-            set -eu
-            mkdir -p dist-artifacts
-            cp target/release/prompt-vault dist-artifacts/
-            cp target/x86_64-pc-windows-gnu/release/prompt-vault.exe dist-artifacts/
-            cd dist-artifacts
-            sha256sum prompt-vault prompt-vault.exe | tee SHA256SUMS
-            ls -lh
-
-        # 上传前先自检：把「文件在不在、cwd 是哪个、目标 commit 是哪个」打进日志。
-        # 没有这段，上传后附件为空时无法区分「产物没生成」（前面阶段红了）
-        # 和「路径/事件不对」（产物在、但插件没传上去）。
-        - name: 上传前自检
-          script: |
-            set -eu
-            echo "pwd=$(pwd)"
-            echo "CNB_BUILD_WORKSPACE=${CNB_BUILD_WORKSPACE:-<未设置>}"
-            echo "CNB_COMMIT=${CNB_COMMIT:-<未设置>}  CNB_BRANCH=${CNB_BRANCH:-<未设置>}"
-            echo "--- 工作目录 ---"
-            ls -la
-            echo "--- dist-artifacts ---"
-            ls -la dist-artifacts
-            echo "--- 全仓可上传的产物 ---"
-            find . -maxdepth 4 -type f \( -name 'prompt-vault' -o -name 'prompt-vault.exe' -o -name 'SHA256SUMS' \) -exec ls -lh {} \;
-
-        # 产物必须显式上传，否则流水线一结束就随容器消失了（只有日志里留个 sha256 没用）。
-        # push 事件下不传 commit/tag 时，插件默认上传到 $CNB_COMMIT 的 commit 附件（提交详情页可见）。
-        # 写法对齐官方示例：路径带 ./、不写 type（默认即 UPLOAD）、用 exports 把上传清单回读到日志。
-        - name: 上传产物（commit 附件）
-          image: cnbcool/attachments:latest
-          settings:
-            attachments:
-              - "./dist-artifacts/prompt-vault"
-              - "./dist-artifacts/prompt-vault.exe"
-              - "./dist-artifacts/SHA256SUMS"
-          exports:
-            FILES: FILES
-
-        - name: 确认上传结果
-          script: |
-            echo "插件回传的上传文件清单: ${FILES:-<空——插件没有报出任何已上传文件>}"
-
-      # 无论 stages 成败都执行（官方语义：endStages 失败也不影响流水线状态），
-      # 用于「构建红了」时也能在日志末尾看到现场，而不是只看到一句附件是空的。
-      endStages:
-        - name: 附件自检（无论成败）
-          script: |
-            set +e
-            echo "=== 现场 ==="
-            echo "pwd=$(pwd)"
-            echo "CNB_BUILD_WORKSPACE=${CNB_BUILD_WORKSPACE:-<未设置>}"
-            echo "CNB_COMMIT=${CNB_COMMIT:-<未设置>}"
-            echo "FILES=${FILES:-<空>}"
-            echo "=== dist-artifacts ==="
-            ls -la dist-artifacts 2>&1
 
   # ------------------------------------------------------------ 手动同步到 GitHub
   # 对应 .cnb/web_trigger.yml 里 `event: web_trigger_sync_github` 的「同步到 GitHub」按钮。

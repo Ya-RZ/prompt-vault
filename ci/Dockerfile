@@ -33,6 +33,8 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --profile minimal --default-toolchain ${RUST_VERSION} \
     && rustup target add x86_64-pc-windows-gnu \
+    # minimal profile 不含 clippy/rustfmt，而 push 流水线只用 clippy 做门禁
+    && rustup component add clippy rustfmt \
     && chmod -R a+rwX ${RUSTUP_HOME} ${CARGO_HOME}
 
 # pnpm 版本与仓库 lockfile 对齐（package.json 没写 packageManager 字段，所以显式钉住）
