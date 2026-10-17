@@ -1,0 +1,43 @@
+# CNB 手动触发按钮（显示在分支详情页）
+#
+# 机制（官方文档 zh/build/web-trigger.html）：
+#   · 这里只能定义**按钮**，按钮只能触发 `web_trigger_*` 自定义事件；
+#   · 事件对应的流水线必须在 .cnb.yml 里配置，名字与本文件的 `event` 完全一致：
+#       event: web_trigger_build  →  .cnb.yml 的 main.web_trigger_build
+#   · 想改按钮文案只改这里；想改编译行为改 .cnb.yml。
+#
+# YAML 陷阱：default 一律加引号。不加的话 "true"/"2026-08-01" 会被 YAML 解析成
+# 布尔/日期对象，导致环境变量值不是你要的字符串。
+
+branch:
+  - reg: ^main$
+    buttons:
+      - name: 手动编译
+        description: 不推送代码，手动跑一次构建（前端 + Rust，默认双平台）
+        event: web_trigger_build
+        groupName: 构建
+        # 设为默认按钮：点「运行流水线」时直接弹出这个按钮的参数框
+        isDefault: true
+        inputs:
+          targets:
+            name: 编译目标
+            description: 选择要产出的二进制
+            type: select
+            default: both
+            options:
+              - name: Linux + Windows（默认）
+                value: both
+              - name: 仅 Linux x86_64
+                value: linux
+              - name: 仅 Windows x86_64
+                value: windows
+          run_tests:
+            name: 是否运行测试
+            description: 关闭可以加快手动构建（测试约 1 分钟）
+            type: switch
+            default: "true"
+            options:
+              - name: 运行
+                value: "true"
+              - name: 跳过
+                value: "false"

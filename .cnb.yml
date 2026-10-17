@@ -96,6 +96,79 @@ main:
             sha256sum prompt-vault prompt-vault.exe | tee SHA256SUMS
             ls -lh
 
+  # ------------------------------------------------------------ 手动触发（按钮）
+  # 对应 .cnb/web_trigger.yml 里 `event: web_trigger_build` 的那个「手动编译」按钮。
+  # 只做编译：前端 → Rust（按参数选平台）→ 可选测试 → 产物摘要。
+  # 参数来自按钮弹窗（targets / run_tests），未传时走默认值。
+  web_trigger_build:
+    - name: 手动编译
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+          versionBy:
+            - ci/Dockerfile
+        volumes:
+          - /usr/local/cargo/registry
+          - /usr/local/cargo/git
+          - ./target
+          - /root/.local/share/pnpm/store
+      stages:
+        - name: 环境自检
+          script: |
+            set -eu
+            echo "工作目录: $(pwd)"
+            node --version
+            pnpm --version
+            rustc --version
+            echo "参数: targets=${targets:-both} run_tests=${run_tests:-true}"
+
+        - name: 前端构建
+          script: |
+            set -eu
+            cd web
+            pnpm install --frozen-lockfile
+            pnpm build
+            test -f dist/index.html
+
+        - name: 编译
+          script: |
+            set -eu
+            T="${targets:-both}"
+            case "$T" in
+              both|linux)   cargo build --release --locked ;;
+            esac
+            case "$T" in
+              both|windows) cargo build --release --locked --target x86_64-pc-windows-gnu ;;
+            esac
+            ls -lh target/release/prompt-vault 2>/dev/null || true
+            ls -lh target/x86_64-pc-windows-gnu/release/prompt-vault.exe 2>/dev/null || true
+
+        - name: 测试
+          script: |
+            set -eu
+            if [ "${run_tests:-true}" = "true" ]; then
+              cargo test --release --locked -- --test-threads=1
+            else
+              echo "已按参数跳过测试"
+            fi
+
+        - name: 产物摘要
+          script: |
+            set -eu
+            mkdir -p dist-artifacts
+            for f in target/release/prompt-vault target/x86_64-pc-windows-gnu/release/prompt-vault.exe; do
+              if [ -f "$f" ]; then cp "$f" dist-artifacts/; fi
+            done
+            cd dist-artifacts
+            sha256sum * | tee SHA256SUMS
+            ls -lh
+
+
 # ---------------------------------------------------------------- 打 Tag 时发布
 # 推一个 tag（如 v0.1.0）→ 构建双平台产物 → 创建 Release → 把两个二进制挂成附件。
 # 附件插件要求「tag 需有对应的 release 才能上传附件」，所以创建 Release 必须在附件步骤之前。
