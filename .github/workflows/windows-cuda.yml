@@ -122,32 +122,26 @@ jobs:
             exit 1
           }
 
-      - name: 冒烟（只验证能启动，不加载模型）
-        # 不设 --encoder candle，避免在 CI 里加载 4.2 GB 权重；这里只确认二进制能启动。
-        # 关键：CUDA 版 exe 启动时要找 cudart64_*.dll，而 CUDA 的 bin 目录默认不在 PATH
-        # （action 只设了 CUDA_PATH 变量）→ 不加这行 exe 会静默退出、没有任何输出。
+      - name: 校验产物（不运行）
+        # 为什么不在 CI 里跑：CUDA 版的 import 表里有 `nvcuda.dll`，那是 **NVIDIA 驱动**
+        # 提供的库。GitHub 的 runner 没有显卡，这个 DLL 根本不存在，exe 会以
+        # 0xC0000135 (STATUS_DLL_NOT_FOUND) 直接退出 —— 不是程序坏了，是物理限制。
+        # 所以这里只做静态校验：产物存在、体积合理、CUDA driver 确实链进去了。
         run: |
-          $env:PATH = "$env:CUDA_PATH\bin;$env:PATH"
-          # 先列出 exe 的硬依赖，并检查每个能否在 PATH 里找到
-          Write-Output "=== import 表 ==="
-          dumpbin /DEPENDENTS .\target\release\prompt-vault.exe 2>$null | Select-String "\.dll"
-          Write-Output "=== 缺失检查 ==="
-          $deps = (dumpbin /DEPENDENTS .\target\release\prompt-vault.exe 2>$null) |
-            ForEach-Object { if ($_ -match '^\s+(\S+\.dll)\s*$') { $matches[1] } } | Select-Object -Unique
-          foreach ($d in $deps) {
-            $hit = $null
-            foreach ($p in $env:PATH -split ';') { if (Test-Path (Join-Path $p $d)) { $hit = $p; break } }
-            if (-not $hit) { Write-Output "MISSING: $d" } else { Write-Output "ok: $d -> $hit" }
+          $exe = ".\target\release\prompt-vault.exe"
+          if (-Not (Test-Path $exe)) { throw "产物不存在" }
+          $size = (Get-Item $exe).Length
+          Write-Output ("产物大小: {0:N1} MB" -f ($size / 1MB))
+          if ($size -lt 5MB) { throw "产物异常偏小（$size bytes），疑似构建不完整" }
+
+          $deps = (dumpbin /DEPENDENTS $exe 2>$null) -join "`n"
+          foreach ($must in @("nvcuda.dll", "cudart", "cublas")) {
+            if ($deps -notmatch [regex]::Escape($must)) {
+              throw "产物未链接 $must —— CUDA 可能没真正启用"
+            }
           }
-          Write-Output "=== 运行 --help ==="
-          .\target\release\prompt-vault.exe --help
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output "exe 启动失败，exit code = $LASTEXITCODE"
-            Get-ChildItem "$env:CUDA_PATH\bin" -Filter *.dll | Select-Object -First 5 Name
-            exit 1
-          }
-          if (-Not (Test-Path ".\target\release\prompt-vault.exe")) { throw "产物不存在" }
-          Write-Output "✓ 二进制可启动"
+          Write-Output "✓ 产物存在、体积正常、CUDA driver 已链接"
+          Write-Output "说明：该 exe 运行时需要 NVIDIA 驱动（nvcuda.dll）与 CUDA runtime（cudart/curand/cublas）。"
 
       - name: 收集产物
         run: |
