@@ -128,6 +128,18 @@ jobs:
         # （action 只设了 CUDA_PATH 变量）→ 不加这行 exe 会静默退出、没有任何输出。
         run: |
           $env:PATH = "$env:CUDA_PATH\bin;$env:PATH"
+          # 先列出 exe 的硬依赖，并检查每个能否在 PATH 里找到
+          Write-Output "=== import 表 ==="
+          dumpbin /DEPENDENTS .\target\release\prompt-vault.exe 2>$null | Select-String "\.dll"
+          Write-Output "=== 缺失检查 ==="
+          $deps = (dumpbin /DEPENDENTS .\target\release\prompt-vault.exe 2>$null) |
+            ForEach-Object { if ($_ -match '^\s+(\S+\.dll)\s*$') { $matches[1] } } | Select-Object -Unique
+          foreach ($d in $deps) {
+            $hit = $null
+            foreach ($p in $env:PATH -split ';') { if (Test-Path (Join-Path $p $d)) { $hit = $p; break } }
+            if (-not $hit) { Write-Output "MISSING: $d" } else { Write-Output "ok: $d -> $hit" }
+          }
+          Write-Output "=== 运行 --help ==="
           .\target\release\prompt-vault.exe --help
           if ($LASTEXITCODE -ne 0) {
             Write-Output "exe 启动失败，exit code = $LASTEXITCODE"
