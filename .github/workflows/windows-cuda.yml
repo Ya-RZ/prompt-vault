@@ -135,7 +135,9 @@ jobs:
           if ($size -lt 5MB) { throw "产物异常偏小（$size bytes），疑似构建不完整" }
 
           $deps = (dumpbin /DEPENDENTS $exe 2>$null) -join "`n"
-          foreach ($must in @("nvcuda.dll", "cudart", "cublas")) {
+          # 实测 import 表是 nvcuda(driver API) + curand + cublas；
+          # candle 走 driver API，并不直接链 cudart，所以别把 cudart 写进必查项。
+          foreach ($must in @("nvcuda.dll", "cublas", "curand")) {
             if ($deps -notmatch [regex]::Escape($must)) {
               throw "产物未链接 $must —— CUDA 可能没真正启用"
             }
