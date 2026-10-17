@@ -62,6 +62,8 @@ jobs:
         with:
           # cuda feature 会编译 candle 的 kernel，缓存命中率直接影响耗时
           shared-key: windows-cuda
+          # 默认 false：失败的 run 不保存缓存，于是每次调错都要从零编译 20+ 分钟
+          cache-on-failure: true
 
       - name: 安装 Node 22
         uses: actions/setup-node@v4
@@ -121,10 +123,19 @@ jobs:
           }
 
       - name: 冒烟（只验证能启动，不加载模型）
-        # 不设 --encoder candle，避免在 CI 里加载 4.2 GB 权重；这里只确认二进制结构完整
+        # 不设 --encoder candle，避免在 CI 里加载 4.2 GB 权重；这里只确认二进制能启动。
+        # 关键：CUDA 版 exe 启动时要找 cudart64_*.dll，而 CUDA 的 bin 目录默认不在 PATH
+        # （action 只设了 CUDA_PATH 变量）→ 不加这行 exe 会静默退出、没有任何输出。
         run: |
+          $env:PATH = "$env:CUDA_PATH\bin;$env:PATH"
           .\target\release\prompt-vault.exe --help
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "exe 启动失败，exit code = $LASTEXITCODE"
+            Get-ChildItem "$env:CUDA_PATH\bin" -Filter *.dll | Select-Object -First 5 Name
+            exit 1
+          }
           if (-Not (Test-Path ".\target\release\prompt-vault.exe")) { throw "产物不存在" }
+          Write-Output "✓ 二进制可启动"
 
       - name: 收集产物
         run: |
