@@ -163,8 +163,9 @@ main:
         tags: cnb:arch:amd64
         cpus: 2
       imports:
-        # TODO: 换成你的密钥仓库地址
-        - https://cnb.cool/yaorz/rust/secret/-/blob/main/github.yml
+        # 密钥仓库文件（私有），内容见 ~/.ssh/github.yml：
+        #   GITHUB_SSH_KEY: |  ← 缩进 2 格的完整 ed25519 私钥
+        - https://cnb.cool/yaorz/secret/-/blob/main/github.yml
       stages:
         - name: 同步到 GitHub
           image: tencentcom/git-sync
