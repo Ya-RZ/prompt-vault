@@ -35,7 +35,11 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # 不用 windows-latest：它现在的 Visual Studio 版本已经超出 CUDA 12.4 的
+    # host_config.h 白名单（只支持 VS 2017–2022），会直接报
+    #   #error: -- unsupported Microsoft Visual Studio version!
+    # windows-2022 带的是 VS 2022(17.x)，在支持范围内。
+    runs-on: windows-2022
     env:
       # 目标卡的算力：RTX 4060 是 Ada = sm_89；30 系 Ampere 用 86；20 系 Turing 用 75。
       # 不设的话 candle 的构建脚本会 fallback 去调 nvidia-smi，在无卡 runner 上直接 panic。
