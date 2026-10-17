@@ -65,6 +65,12 @@ main:
       runner:
         tags: cnb:arch:amd64
         cpus: 2
+      env:
+        # CI 里没有交互终端，SSH 首次连 ssh.github.com:443 会在
+        # "Are you sure you want to continue connecting?" 这一步直接失败
+        # （表现为 Host key verification failed）。
+        # accept-new：首次自动接受并记下；known_hosts 指到 /tmp 避免 HOME 只读。
+        GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts -o ConnectTimeout=15"
       imports:
         # 密钥仓库文件（私有），内容见 ~/.ssh/github.yml：
         #   GITHUB_SSH_KEY: |  ← 缩进 2 格的完整 ed25519 私钥
