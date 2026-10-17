@@ -70,6 +70,14 @@ jobs:
           corepack prepare pnpm@12.8.1 --activate
           pnpm --version
 
+      - name: 配置 MSVC 开发环境（cl.exe）
+        # nvcc 在 Windows 上把 MSVC 的 cl.exe 当 host compiler。
+        # windows-latest 装了 Visual Studio，但 cl.exe 默认**不在 PATH**里，
+        # 不做这一步会报：nvcc fatal : Cannot find compiler 'cl.exe' in PATH
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: 安装 CUDA Toolkit
         id: cuda
         uses: Jimver/cuda-toolkit@v0.2.20
@@ -95,7 +103,15 @@ jobs:
           if (-Not (Test-Path "dist/index.html")) { throw "web/dist/index.html 不存在" }
 
       - name: 构建（CUDA）
-        run: cargo build --release --locked --features cuda
+        run: |
+          # 把完整输出留一份到文件并回显，避免 Actions 折叠吞掉关键行
+          cargo build --release --locked --features cuda 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            "### cargo build 失败" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            "``````" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            Get-Content build.log -Tail 120 | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
       - name: 冒烟（只验证能启动，不加载模型）
         # 不设 --encoder candle，避免在 CI 里加载 4.2 GB 权重；这里只确认二进制结构完整
