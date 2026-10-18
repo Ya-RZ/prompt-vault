@@ -217,6 +217,12 @@ impl AppState {
     }
 
     pub fn golden_snapshot(&self) -> GoldenInfo {
+        // 模型加载后会自动跑三段文本自检，那份结果是实时的、比启动时缓存的可信：
+        // 启动时模型还没加载，缓存里只能是 unchecked。
+        let live = self.encoder.verify_golden();
+        if live.status != "unchecked" && live.status != "unsupported" {
+            return live;
+        }
         self.golden
             .read()
             .map(|g| g.clone())

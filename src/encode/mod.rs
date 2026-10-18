@@ -139,31 +139,56 @@ impl EncoderClient {
         }
     }
 
-    /// 金标校验。
+    /// 金标校验：读模型加载后自动跑的三段文本自检结果。
     ///
-    /// candle 没有可复用的历史基线（它与被移除的 Python 实现不同源，基线不通用），
-    /// mock 模式更没跑模型 —— 两种情况都返回 `unsupported`，不假装通过、也不拦作业。
+    /// - 模型未加载 → `unchecked`（自检在首次编码时进行，不假装通过）
+    /// - 自检通过 → `passed`，`cos_text` 是三段里与基线的最小余弦
+    /// - 自检失败 → `failed`，此时 `embed` 会拒绝出向量、作业闸门也会拦
+    /// - `--mock` → `unsupported`（没跑模型，无可校验）
     pub fn verify_golden(&self) -> GoldenInfo {
-        let detail = if self.mock {
-            "mock 模式未运行模型，不参与金标校验"
-        } else {
-            "candle 后端没有可复用的历史基线（与旧实现不同源）；换后端后需全量重编码"
-        };
-        GoldenInfo {
-            status: "unsupported".into(),
-            passed: None,
-            checked_at: Some(crate::db::now_rfc3339()),
-            detail: Some(detail.into()),
-            cos_text: None,
-            cos_image: None,
-            threshold: None,
-            device_mismatch: false,
-            encoded_device: Some(
-                self.candle
-                    .as_ref()
-                    .map(|c| c.device_label().to_string())
-                    .unwrap_or_else(|| "cpu".to_string()),
-            ),
+        let encoded_device = self
+            .candle
+            .as_ref()
+            .map(|c| c.device_label().to_string())
+            .unwrap_or_else(|| "cpu".to_string());
+
+        if self.mock {
+            return GoldenInfo {
+                status: "unsupported".into(),
+                passed: None,
+                checked_at: Some(crate::db::now_rfc3339()),
+                detail: Some("mock 模式未运行模型，不参与金标校验".into()),
+                cos_text: None,
+                cos_image: None,
+                threshold: None,
+                device_mismatch: false,
+                encoded_device: Some(encoded_device),
+            };
+        }
+
+        match self.candle.as_ref().and_then(|c| c.golden_check()) {
+            Some(g) => GoldenInfo {
+                status: if g.passed { "passed" } else { "failed" }.into(),
+                passed: Some(g.passed),
+                checked_at: Some(g.checked_at),
+                detail: Some(g.detail),
+                cos_text: g.min_cosine.is_finite().then_some(g.min_cosine),
+                cos_image: None,
+                threshold: Some(candle::GOLDEN_THRESHOLD),
+                device_mismatch: false,
+                encoded_device: Some(encoded_device),
+            },
+            None => GoldenInfo {
+                status: "unchecked".into(),
+                passed: None,
+                checked_at: None,
+                detail: Some("模型尚未加载：三段文本自检会在首次编码时自动执行".into()),
+                cos_text: None,
+                cos_image: None,
+                threshold: Some(candle::GOLDEN_THRESHOLD),
+                device_mismatch: false,
+                encoded_device: Some(encoded_device),
+            },
         }
     }
 }

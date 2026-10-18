@@ -6,8 +6,12 @@
 //! 只要**整个索引用同一个后端重建**，内部就是自洽的；指纹机制（§9）会拦住混用。
 //!
 //! 三个硬约束：
-//! 1. **强制离线**：只读本地模型，绝不联网。做法是把模型目录伪装成 HuggingFace
-//!    的缓存结构（`$HF_HOME/hub/models--.../snapshots/<rev>/`），再设 `HF_HUB_OFFLINE=1`。
+//! 1. **强制离线**：只读本地模型，绝不联网。做法是把模型目录伪装成 hf-hub 的缓存结构
+//!    （`$HF_HOME/models--.../snapshots/<rev>/` + `refs/main`）。
+//!
+//!    ⚠️ hf-hub 0.5 **没有实现** `HF_HUB_OFFLINE`：`repo.get()` 一旦缓存未命中就会去下载。
+//!    真正保证「不联网」的是**缓存命中**，所以 `prepare_hf_cache` 必须先逐个校验文件齐全，
+//!    缺一个就在本地报错，而不是把决定权交给 hf-hub。
 //! 2. **max_pixels 默认 3,145,728**（`--max-pixels` 可覆盖）。fastembed 读的是模型目录里的
 //!    `preprocessor_config.json`（原值 1,310,720），所以我们在构造缓存时写一份
 //!    改写过的副本 —— **不动原始模型文件**。
@@ -36,6 +40,33 @@ const CACHE_REVISION: &str = "local";
 pub const MAX_PIXELS: i64 = 3_145_728;
 pub const MIN_PIXELS: i64 = 4_096;
 pub const NATIVE_DIM: usize = 2_048;
+
+/// 金标自检用的三段固定文本：全中文 / 全英文 / 中英混合。
+///
+/// 每次模型加载后都跑同样这三段：既验证「编码是否可重复」（与基线向量的余弦），
+/// 也验证「tokenizer 对三种文本都正常」（维度、有限值、区分度）。
+const GOLDEN_TEXTS: [(&str, &str); 3] = [
+    ("zh", "一只橘色的猫坐在窗台上，阳光透过玻璃照在它的背上。"),
+    ("en", "A ginger cat sits on the windowsill while sunlight falls across its back."),
+    ("mix", "一只 ginger cat 坐在 window sill 上，阳光照在它的 back。"),
+];
+
+/// 同一指纹下同一输入应逐位相同，这里留一点浮点/调度余量。
+pub const GOLDEN_THRESHOLD: f64 = 0.9999;
+/// 三段文本两两之间的余弦必须低于这个值 —— 否则说明编码器退化成了常数向量。
+const GOLDEN_MAX_INTER_SIMILARITY: f64 = 0.99;
+
+/// 模型加载后自检的结果。
+#[derive(Debug, Clone)]
+pub struct GoldenCheck {
+    /// passed | failed | created | rebuilt
+    pub status: &'static str,
+    pub passed: bool,
+    /// 三段里与基线余弦的最小值（无基线时为 NaN）
+    pub min_cosine: f64,
+    pub detail: String,
+    pub checked_at: String,
+}
 
 /// 加载模型必须存在的文件（缺一个就直接报错，而不是等到加载到一半）
 const REQUIRED_FILES: &[&str] = &[
@@ -242,6 +273,8 @@ pub struct CandleEncoder {
     max_pixels: u64,
     /// 懒加载：第一次编码时才真正把权重 mmap 进来（2B 模型加载要几十秒）
     loaded: Mutex<Option<Arc<Qwen3VLEmbedding>>>,
+    /// 加载后自检的结果（每进程一次）
+    golden: Mutex<Option<GoldenCheck>>,
 }
 
 /// 构造 [`CandleEncoder`] 的一组参数。
@@ -280,6 +313,7 @@ impl CandleEncoder {
             max_aspect_ratio: opts.max_aspect_ratio,
             max_pixels: opts.max_pixels,
             loaded: Mutex::new(None),
+            golden: Mutex::new(None),
         }
     }
 
@@ -380,8 +414,161 @@ impl CandleEncoder {
         tracing::info!(elapsed_s = began.elapsed().as_secs_f64(), "模型加载完成");
 
         let encoder = Arc::new(encoder);
+        // 加载成功后立刻跑一次金标自检：模型坏了/权重不对，在这里就暴露，
+        // 而不是等到一大堆资产都编码完才发现向量不可比。
+        let check = self.run_golden_check(&encoder);
+        if let Ok(mut slot) = self.golden.lock() {
+            *slot = Some(check.clone());
+        }
+        match check.status {
+            "failed" => tracing::error!(detail = %check.detail, "模型自检未通过"),
+            "created" | "rebuilt" => tracing::warn!(detail = %check.detail, "金标基线已建立"),
+            _ => tracing::info!(min_cosine = check.min_cosine, "模型自检通过"),
+        }
         *slot = Some(Arc::clone(&encoder));
         Ok(encoder)
+    }
+
+    /// 最近一次自检结果（未加载模型时为 None）。
+    pub fn golden_check(&self) -> Option<GoldenCheck> {
+        self.golden.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 三段固定文本的金标自检。
+    ///
+    /// 判定：
+    /// 1. 三段都要能编码成功，维度为 2048，且不含 NaN/Inf；
+    /// 2. 三段两两余弦必须低于 [`GOLDEN_MAX_INTER_SIMILARITY`]（否则是常数向量退化）；
+    /// 3. 若基线存在且指纹一致，则每段与基线的余弦都要 ≥ [`GOLDEN_THRESHOLD`]；
+    /// 4. 基线不存在或指纹已变（换模型/精度/设备/像素口径）→ 重建基线并标记。
+    fn run_golden_check(&self, encoder: &Qwen3VLEmbedding) -> GoldenCheck {
+        let checked_at = crate::db::now_rfc3339();
+        let texts: Vec<&str> = GOLDEN_TEXTS.iter().map(|(_, t)| *t).collect();
+        let vectors = match encoder.embed_texts(&texts) {
+            Ok(v) => v,
+            Err(e) => {
+                return GoldenCheck {
+                    status: "failed",
+                    passed: false,
+                    min_cosine: f64::NAN,
+                    detail: format!("三段文本编码失败: {e}"),
+                    checked_at,
+                }
+            }
+        };
+
+        // ---- 1. 维度与有限值 ----
+        for ((label, _), v) in GOLDEN_TEXTS.iter().zip(&vectors) {
+            if v.len() != NATIVE_DIM {
+                return GoldenCheck {
+                    status: "failed",
+                    passed: false,
+                    min_cosine: f64::NAN,
+                    detail: format!("{label} 向量维度为 {}，期望 {NATIVE_DIM}", v.len()),
+                    checked_at,
+                };
+            }
+            if v.iter().any(|x| !x.is_finite()) {
+                return GoldenCheck {
+                    status: "failed",
+                    passed: false,
+                    min_cosine: f64::NAN,
+                    detail: format!("{label} 向量含 NaN/Inf"),
+                    checked_at,
+                };
+            }
+        }
+
+        // ---- 2. 区分度：三段之间不能太像 ----
+        let mut worst_inter = 0.0f64;
+        for i in 0..vectors.len() {
+            for j in (i + 1)..vectors.len() {
+                let c = cosine(&vectors[i], &vectors[j]);
+                worst_inter = worst_inter.max(c);
+            }
+        }
+        if worst_inter >= GOLDEN_MAX_INTER_SIMILARITY {
+            return GoldenCheck {
+                status: "failed",
+                passed: false,
+                min_cosine: f64::NAN,
+                detail: format!(
+                    "三段文本两两余弦最高 {worst_inter:.6} ≥ {GOLDEN_MAX_INTER_SIMILARITY}，                     疑似编码器退化为常数向量"
+                ),
+                checked_at,
+            };
+        }
+
+        // ---- 3. 与基线比对 ----
+        let path = self.cache_dir.join(GOLDEN_BASELINE_FILE);
+        let expected_fp = self.fingerprint();
+        match load_baseline(&path) {
+            Some(base) if base.fingerprint == expected_fp => {
+                let mut min_cos = f64::INFINITY;
+                let mut mismatched: Vec<String> = Vec::new();
+                for ((label, _), v) in GOLDEN_TEXTS.iter().zip(&vectors) {
+                    match base.vectors.get(*label) {
+                        Some(b) if b.len() == v.len() => {
+                            let c = cosine(v, b);
+                            min_cos = min_cos.min(c);
+                            if c < GOLDEN_THRESHOLD {
+                                mismatched.push(format!("{label}={c:.6}"));
+                            }
+                        }
+                        _ => mismatched.push(format!("{label}=基线缺失")),
+                    }
+                }
+                if mismatched.is_empty() {
+                    GoldenCheck {
+                        status: "passed",
+                        passed: true,
+                        min_cosine: min_cos,
+                        detail: format!(
+                            "zh/en/mix 三段与基线一致（最小余弦 {min_cos:.6}，互相关 {worst_inter:.4}）"
+                        ),
+                        checked_at,
+                    }
+                } else {
+                    GoldenCheck {
+                        status: "failed",
+                        passed: false,
+                        min_cosine: min_cos,
+                        detail: format!(
+                            "向量与基线不一致（阈值 {GOLDEN_THRESHOLD}）：{}",
+                            mismatched.join("，")
+                        ),
+                        checked_at,
+                    }
+                }
+            }
+            other => {
+                // 无基线，或指纹变了（换模型/精度/设备/像素口径）→ 重建
+                let status = if other.is_some() { "rebuilt" } else { "created" };
+                let mut map = std::collections::BTreeMap::new();
+                for ((label, _), v) in GOLDEN_TEXTS.iter().zip(&vectors) {
+                    map.insert((*label).to_string(), v.clone());
+                }
+                let base = GoldenBaseline {
+                    fingerprint: expected_fp,
+                    created_at: checked_at.clone(),
+                    vectors: map,
+                };
+                let detail = match write_baseline(&path, &base) {
+                    Ok(()) if status == "created" => {
+                        format!("基线不存在，已用本次结果创建（{path:?}）")
+                    }
+                    Ok(()) => format!("指纹已变（换模型/精度/设备/像素口径），基线已重建（{path:?}）"),
+                    Err(e) => format!("基线写入失败: {e}"),
+                };
+                GoldenCheck {
+                    status,
+                    passed: true,
+                    min_cosine: f64::NAN,
+                    detail,
+                    checked_at,
+                }
+            }
+        }
     }
 
     /// 编码一批输入（在 spawn_blocking 里跑，避免卡住 async 运行时）
@@ -423,6 +610,20 @@ impl CandleEncoder {
         }
 
         let encoder = self.ensure_loaded()?;
+        // 自检没通过就不出向量：宁可报错，也不要把不可比的向量写进索引
+        if let Some(g) = self.golden_check() {
+            if !g.passed {
+                return Err(ApiError::golden_failed(format!(
+                    "模型自检未通过，拒绝编码：{}",
+                    g.detail
+                ))
+                .with_detail(serde_json::json!({
+                    "status": g.status,
+                    "min_cosine": g.min_cosine,
+                    "checked_at": g.checked_at,
+                })));
+            }
+        }
         let fingerprint = self.fingerprint();
         let mut out: Vec<Option<EncodeOutcome>> = (0..input.len()).map(|_| None).collect();
 
@@ -576,10 +777,14 @@ fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64, max_pixels: u64) -> A
     })
 }
 
-/// 「强制离线」的进程级环境只设一次。
+/// 进程级环境只设一次。
 ///
-/// `HF_HOME` / `HF_HUB_OFFLINE` 是全局变量，设置本身就是进程副作用：
-/// 每次加载都重复 `set_var` 既无意义，也会在 edition 2024 下变成 unsafe 调用。
+/// `HF_HOME` 是 hf-hub 用来定位缓存目录的关键变量（`pull_from_hf` 直接读它）。
+/// `HF_HUB_OFFLINE` / `HF_HUB_DISABLE_TELEMETRY` 在 hf-hub 0.5 里**并不存在**，
+/// 设了只是无害的保险（未来版本可能支持）；真正防止联网靠的是缓存命中 + 文件预校验。
+///
+/// 这些是全局变量，设置本身就是进程副作用：重复 `set_var` 无意义，
+/// 未来切 edition 2024 时还需要 unsafe 包裹。
 static HF_ENV: Once = Once::new();
 
 fn install_hf_env(hf_home: &Path) {
@@ -597,7 +802,7 @@ fn install_hf_env(hf_home: &Path) {
 ///
 /// 产物：
 /// ```text
-/// <cache_dir>/hub/models--Qwen--Qwen3-VL-Embedding-2B/
+/// <cache_dir>/models--Qwen--Qwen3-VL-Embedding-2B/
 ///   refs/main              ← 内容 "local"
 ///   snapshots/local/
 ///     config.json          ← 硬链接（不复制，不占额外空间）
@@ -634,6 +839,50 @@ pub fn warn_if_max_pixels_overridden(model_dir: &Path, max_pixels: u64) {
     }
 }
 
+/// 金标基线文件名（放在 HF 缓存目录里，与模型缓存同生命周期）。
+const GOLDEN_BASELINE_FILE: &str = "golden-baseline.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GoldenBaseline {
+    fingerprint: String,
+    created_at: String,
+    /// 标签 → 2048 维向量（zh / en / mix）
+    vectors: std::collections::BTreeMap<String, Vec<f32>>,
+}
+
+fn load_baseline(path: &Path) -> Option<GoldenBaseline> {
+    let raw = std::fs::read(path).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn write_baseline(path: &Path, base: &GoldenBaseline) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec(base)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, bytes)
+}
+
+/// 余弦相似度（向量已 L2 归一化，这里仍按通式算，避免依赖归一化假设）。
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let mut dot = 0.0f64;
+    let mut na = 0.0f64;
+    let mut nb = 0.0f64;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let x = *x as f64;
+        let y = *y as f64;
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na.sqrt() * nb.sqrt())
+    }
+}
+
 /// 缓存副本里的 max_pixels / min_pixels 是否已经等于期望值。
 /// 读不出来（不存在、损坏）一律视为不一致，让它重写。
 fn config_matches(path: &Path, max_pixels: u64) -> bool {
@@ -661,11 +910,11 @@ fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path, max_pixels: u64) -> ApiR
     }
 
     let hf_home = cache_dir.to_path_buf();
-    let snapshot = hf_home
-        .join("hub")
-        .join("models--Qwen--Qwen3-VL-Embedding-2B")
-        .join("snapshots")
-        .join(CACHE_REVISION);
+    // ⚠️ 结构必须与 hf-hub 的 Cache 一致：<cache_dir>/<模型目录>/snapshots/<rev>/，
+    // **没有 `hub/` 这一层**（那是 HF_HOME 在 Python 侧的约定，不是 hf-hub 的）。
+    // 多套一层 hub/ 的结果是缓存永远不命中 → repo.get() 转去下载 → 断网直接失败。
+    let repo_root = hf_home.join("models--Qwen--Qwen3-VL-Embedding-2B");
+    let snapshot = repo_root.join("snapshots").join(CACHE_REVISION);
     std::fs::create_dir_all(&snapshot)
         .map_err(|e| ApiError::internal(format!("创建缓存目录失败: {e}")))?;
 
@@ -704,10 +953,7 @@ fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path, max_pixels: u64) -> ApiR
         }
     }
 
-    let refs = hf_home
-        .join("hub")
-        .join("models--Qwen--Qwen3-VL-Embedding-2B")
-        .join("refs");
+    let refs = repo_root.join("refs");
     std::fs::create_dir_all(&refs)
         .map_err(|e| ApiError::internal(format!("创建 refs 目录失败: {e}")))?;
     std::fs::write(refs.join("main"), CACHE_REVISION)

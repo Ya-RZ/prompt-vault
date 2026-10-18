@@ -83,6 +83,21 @@
 3. 查询时若当前指纹与索引指纹不一致 → 拒绝检索并返回 `FINGERPRINT_MISMATCH`（同一空间才能比）。
 4. 编码不可用**不报 503 拦检索**：文本检索退化为词法；只有必须有向量的接口（以图搜图、`mode=dense`）才返回 `ENCODER_UNREACHABLE`。
 
+#### 三段文本金标自检（模型加载后自动执行）
+
+每次加载模型后，用三段固定文本（全中文 / 全英文 / 中英混合）跑一次自检：
+
+| 检查 | 不通过的表现 |
+| --- | --- |
+| 三段都能编码、维度 2048、无 NaN/Inf | `golden.status=failed`，编码请求返回 `409 GOLDEN_FAILED` |
+| 三段两两余弦 < 0.99（防「常数向量」退化） | 同上 |
+| 与基线向量余弦 ≥ 0.9999（基线存在时） | 同上，`detail` 给出各段余弦 |
+
+- 基线文件：`<data-dir>/hf-cache/golden-baseline.json`，记录**编码指纹 + 三段向量**
+- 基线不存在 → 首次加载时创建（`status=created`）
+- 指纹变化（换模型 / 精度 / 设备 / 像素口径）→ 基线自动重建并打 warn，不参与比对
+- 自检失败时 `embed` 直接拒绝出向量，作业与搜索都会看到 `GOLDEN_FAILED`
+
 ### 1.4 已知限制（不静默降级）
 
 1. **不支持图文混合输入**：`{text, image}` 同时存在 → `400`，`detail.index` 指向该输入项（fastembed 的 `Qwen3VLEmbedding` 只实现 text-only / image-only；本项目本就是 image / text 两个向量名分开存）。
