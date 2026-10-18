@@ -129,16 +129,16 @@ meta(key TEXT PK, value TEXT)   -- index_fingerprint / schema_version / last_gol
 ```
 
 **索引与向量同生命周期**（开发文档 §8）：向量的指纹存在 `asset_vector`/`prompt_vector` 里，
-向量本体在 Qdrant Edge，SQLite 只留指纹。
+向量本体在 Qdrant Server（默认 `http://127.0.0.1:6333`，集合名 `pv`），SQLite 只留指纹。
 
-Qdrant Edge payload 约定（`collection` 名 `pv`）：
+Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `PV_QDRANT_COLLECTION` 覆盖）：
 
 | 点 | 说明 |
 | --- | --- |
 | dense 点 id | `asset.id` 直接用作 point id（图片/视频）；提示词点 id = `prompt.id + 1_000_000_000` |
 | 向量名（稠密） | `image`（asset）/ `text`（prompt） |
 | 向量名（稀疏，预留） | `sparse_image` / `sparse_text`，`Modifier::Idf`（内置 BM25，开发文档 §6.1） |
-| payload | `{"kind":"asset"|"prompt","row_id":1,"fingerprint":"…","nsfw":false,"tags":["a","b"],"added_at_ms":1700000000000,"tag_ids":[1,2]}` |
+| payload | `{"kind":"asset"|"prompt","row_id":1,"asset_id":1,"fingerprint":"…","nsfw":false,"tags":["a","b"],"added_at_ms":1700000000000,"source":""}` |
 
 ---
 
@@ -176,7 +176,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
     "fingerprint": "Qwen/Qwen3-VL-Embedding-2B|candle|…|device=cpu",
     "points": 1234, "assets": 1200, "prompts": 34,
     "dense_size": 2048, "sparse_enabled": false, "quantization": "scalar-int8",
-    "dir": "data/qdrant"
+    "dir": "http://127.0.0.1:6333#pv"
   },
   "db": { "path": "data/pv.sqlite", "assets": 1200, "pending_encode": 5 }
 }
@@ -495,24 +495,20 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 | 6 | `pause` 后 `resume` 不重复编码（`cursor` + `asset_vector.fingerprint` 双重判定） |
 | 7 | `DELETE /api/assets/{id}` 后稠密/稀疏两路都不再返回该点 |
 | 8 | 重启后 `/api/health` 正常、数据可查、指纹不变 |
-| 9 | Qdrant Edge PoC 七步（`cargo test --test qdrant_poc -- --nocapture`） |
+| 9 | 用 `--qdrant-url` 连上 Qdrant，集合不存在时自动创建（`image`/`text` + 可选 `sparse_*`），写入后检索可命中 |
 | 11/12 | **不在本轮范围**（用户明确：不准备覆盖语料、不运行模型） |
 
 ---
 
 ## 9. 实测到的实现约束（写给下一个改代码的人）
 
-1. **`EdgeShard` 只在 `Drop` 时 flush**。进程被 `kill`/`SIGTERM` 直接终止会**丢向量**（实测：编码 2 个点后强杀，重启后 `points=0`，而 SQLite 里的指纹还在 → 两边不一致）。
-   所以：写入路径显式 `flush()`，且 `main.rs` 拦下 `SIGINT/SIGTERM`，先 flush 再退出。
-2. **`SparseVector::new` 要求 `indices` 唯一**，重复直接报 `Validation error: must be unique`。
-3. **`serde` 构造量化配置**：crate 根没有导出 `ScalarQuantization` 等类型，用
-   `{"scalar":{"type":"int8","quantile":0.99}}` 反序列化能得到正确配置（实测启动日志确认）；
-   构造失败会**降级为不量化**并在 `/api/maintenance/vector/info` 里如实显示 `quantization: "none"`。
-4. **磁盘占用要按实际占块算**：Qdrant 的向量文件是稀疏预分配，`metadata.len()` 会把 4 个点的库算成 **265 MB**，
-   实际 `du` 只有 **444 KB**（已改用 `st_blocks`）。
+1. **连不上 Qdrant 就启动失败**（重试 3 次，间隔 1s/2s）。这是刻意的：本地工具宁可启动报错，也不要"起来了但搜不到东西"。
+2. **集合配置（维度 / 稀疏 / 量化）建好后不可改**。改配置必须删集合重建；`/api/maintenance/vector/info` 会如实回报当前集合的配置。
+3. **`disk_bytes` 在 Server 模式下恒为 0**：磁盘占用由服务端管理，客户端拿不到。`/api/health` 的 `index.dir` 改为 `url#collection`。
+4. **`SparseVector::new` 要求 `indices` 唯一**，重复直接报 `Validation error: must be unique`。
 5. **`kind` 有两个含义，别混**：Qdrant payload 里的 `kind` 是点类型（`asset`/`prompt`），
    资产表里的 `kind` 是媒体类型（`image`/`video`）。把后者当过滤条件传给 Qdrant 会把结果全滤空（踩过）。
-6. **`qdrant_edge` 会打 `Feature flags not initialized!` 警告**：其 `common::flags` 是私有模块，
-   库使用者无法调用 `init_feature_flags`，只能走默认值。属已知限制，不影响功能。
+6. **所有向量操作都是 async**：`upsert_*` / `search_*` / `delete_*` / `facet` / `count` / `export_jsonl` / `import_jsonl`
+   都要 `.await`；`flush()` / `optimize()` 保留但为空实现（服务端后台自理）。
 7. **本机 lightpanda 的 fetch/XHR 不会结算**（微任务正常、网络请求永久 pending），
    所以"浏览器直连后端渲染"无法用它验证；验证方式：`--inject-script` 注入**真实 curl 抓到的后端响应**。
