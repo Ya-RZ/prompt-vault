@@ -79,6 +79,20 @@ async fn main() {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "info,quinn=warn".to_string());
+    // qdrant-edge 0.8.0 把 `common` 模块声明成私有的（`mod common;`），
+    // 既没有 `init_feature_flags` 也没有 `MULTI_MMAP_SUPPORT_CHECK_RESULT` 的对外入口，
+    // 于是它每次读 feature flags / 多 mmap 开关都会打一条 WARN（启动一次至少 6 条）。
+    // 这些告警对调用方没有任何可操作信息：未初始化时库用的就是 `FeatureFlags::default()`，
+    // 与显式初始化成默认值的行为完全一致。
+    //
+    // 按模块前缀压到 error：`qdrant_edge::common` 同时覆盖 `common::flags` 与
+    // `common::mmap::ops` 两个 target（实测写到更细的 `…::common::flags` 反而不生效，
+    // 所以用模块级前缀）。其余模块（如 `qdrant_edge::wal`）的日志照常输出。
+    // 上游暴露初始化入口后应改回真正的初始化。
+    // 想临时看回这些日志：RUST_LOG="info,qdrant_edge::common=warn"。
+    // 另：该库对「多 mmap 支持」的兜底开关是环境变量 QDRANT_NO_MULTI_MMAP=1
+    // （数据目录挂在 Docker-on-Windows 之类场景下建议打开）。
+    let log_filter = format!("{log_filter},qdrant_edge::common=error");
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(log_filter))
         .init();
