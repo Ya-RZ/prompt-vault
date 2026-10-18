@@ -46,6 +46,9 @@ struct Args {
     /// candle 的序列长度上限（默认 8192）
     #[arg(long, env = "PV_MAX_LENGTH", default_value_t = 8192)]
     max_length: usize,
+    /// 不加载模型，用确定性伪向量跑通链路（仅开发/冒烟；开了它 --model-dir 会被忽略）
+    #[arg(long, env = "PV_MOCK", default_value_t = false)]
+    mock: bool,
     /// 向量维度：本项目固定 2048 不截断（开发文档 §4.2）
     #[arg(long, env = "PV_DIM", default_value_t = 2048)]
     dim: usize,
@@ -109,6 +112,7 @@ async fn main() {
         dim: args.dim,
         sparse_enabled: args.sparse,
         quant: QuantMode::parse(&args.quant),
+        mock: args.mock,
         model_dir: args.model_dir.clone(),
         candle_dtype: args.candle_dtype.clone(),
         candle_device: args.candle_device.clone(),

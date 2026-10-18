@@ -130,10 +130,14 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
       </Tooltip>
 
       <Tooltip
-        title={`模型目录：${encoder.model_dir || '—'}\n模型：${encoder.model || '—'}\n权重加载：${encoder.loaded ? '已加载' : '未加载（首次编码时加载）'}`}
+        title={
+          encoder.mock
+            ? '当前是 --mock 模式：未加载模型，向量由 sha256 派生，仅供链路验证'
+            : `模型目录：${encoder.model_dir || '—'}\n模型：${encoder.model || '—'}\n权重加载：${encoder.loaded ? '已加载' : '未加载（首次编码时加载）'}`
+        }
       >
         <Tag style={{ marginInlineEnd: 0 }}>
-          {encoder.device || '—'} / {encoder.dim || '—'} 维
+          {encoder.mock ? 'mock' : `${encoder.device || '—'} / ${encoder.dim || '—'} 维`}
         </Tag>
       </Tooltip>
 

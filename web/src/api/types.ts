@@ -47,12 +47,13 @@ export type ApiErrorCode =
  * ========================================================== */
 
 export type HealthStatus = 'READY' | 'DEGRADED';
-/** 编码只有一条路径：进程内 candle 加载本地模型（侧车与 mock 均已移除） */
-export type EncoderMode = 'candle';
 export type GoldenStatus = 'passed' | 'failed' | 'unsupported' | 'unchecked';
 
 export interface EncoderInfo {
+  /** 编码能力是否可用（有模型，或处于 --mock 模式） */
   reachable: boolean;
+  /** 是否 --mock 模式（未加载模型，向量由 sha256 派生） */
+  mock: boolean;
   model: string;
   device: string;
   dim: number;
@@ -62,7 +63,6 @@ export interface EncoderInfo {
   /** 权重是否已真正加载（懒加载：首次编码后才为 true） */
   loaded: boolean;
   fingerprint: string;
-  mode: EncoderMode;
   last_error?: string | null;
   last_checked_at?: string | null;
 }

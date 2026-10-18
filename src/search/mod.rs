@@ -74,54 +74,63 @@ impl<'a> Engine<'a> {
         }
 
         // ---- 向量路 ----
+        // 没有模型（也没开 --mock）时**不报错**：退回纯词法，并在 warnings 里说明。
+        // 这比直接 503 有用得多 —— 用户可能只是想先用词法搜，或者模型还没下载完。
         if mode != "lexical" {
-            let space_ok = self.state.spaces_are_consistent(warnings_from(&mut warnings))?;
-            if !space_ok {
-                return Err(ApiError::fingerprint_mismatch(
-                    "编码指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
-                ));
-            }
-
-            let outcome = self.encode_text(&query.q).await?;
-            let dense_list = self.dense_recall(&outcome, query.k)?;
-            merge_ranked(&mut candidates, "dense", &dense_list);
-
-            // 稀疏路：只有编码器给了 sparse 且索引启用了稀疏才有
-            let sparse_available = self.state.vectors.sparse_enabled()
-                && outcome.sparse.as_ref().map(|(i, _)| !i.is_empty()).unwrap_or(false);
-            if sparse_available {
-                if let Some((indices, values)) = outcome.sparse.as_ref() {
-                    let filter = build_filter(Some(KIND_PROMPT), query.nsfw, &query.tags);
-                    match self.state.vectors.search_sparse(
-                        VEC_SPARSE_TEXT,
-                        indices,
-                        values,
-                        query.k.max(20) * 3,
-                        filter,
-                    ) {
-                        Ok(hits) => {
-                            let list: Vec<(i64, f64, Option<i64>)> = hits
-                                .iter()
-                                .filter_map(|(_, score, payload)| {
-                                    prompt_asset_id(payload).map(|aid| {
-                                        (aid, *score as f64, payload_row_id(payload))
-                                    })
-                                })
-                                .collect();
-                            merge_ranked(&mut candidates, "sparse", &list);
-                        }
-                        Err(e) => warnings.push(format!("稀疏召回失败，已跳过: {e}")),
-                    }
-                }
-            } else if mode == "hybrid" {
-                // 稀疏路只在「编码器真的产出了 BM25 稀疏向量」时才走。
-                // candle 只给稠密向量，所以 hybrid 实际一直是 dense + lexical —— 如实说明，
-                // 别让调用方以为三路都跑了。
+            if !self.state.encoder.is_available() {
                 warnings.push(
-                    "candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"
+                    "编码不可用（没有加载模型）：已退化为纯词法检索；用 --model-dir 指定模型目录后重试可恢复语义检索"
                         .to_string(),
                 );
-                effective = "dense+lexical".to_string();
+                effective = "lexical".to_string();
+            } else {
+                let space_ok = self.state.spaces_are_consistent(warnings_from(&mut warnings))?;
+                if !space_ok {
+                    return Err(ApiError::fingerprint_mismatch(
+                        "编码指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
+                    ));
+                }
+
+                let outcome = self.encode_text(&query.q).await?;
+                let dense_list = self.dense_recall(&outcome, query.k)?;
+                merge_ranked(&mut candidates, "dense", &dense_list);
+
+                // 稀疏路：只有编码器给了 sparse 且索引启用了稀疏才有
+                let sparse_available = self.state.vectors.sparse_enabled()
+                    && outcome.sparse.as_ref().map(|(i, _)| !i.is_empty()).unwrap_or(false);
+                if sparse_available {
+                    if let Some((indices, values)) = outcome.sparse.as_ref() {
+                        let filter = build_filter(Some(KIND_PROMPT), query.nsfw, &query.tags);
+                        match self.state.vectors.search_sparse(
+                            VEC_SPARSE_TEXT,
+                            indices,
+                            values,
+                            query.k.max(20) * 3,
+                            filter,
+                        ) {
+                            Ok(hits) => {
+                                let list: Vec<(i64, f64, Option<i64>)> = hits
+                                    .iter()
+                                    .filter_map(|(_, score, payload)| {
+                                        prompt_asset_id(payload)
+                                            .map(|aid| (aid, *score as f64, payload_row_id(payload)))
+                                    })
+                                    .collect();
+                                merge_ranked(&mut candidates, "sparse", &list);
+                            }
+                            Err(e) => warnings.push(format!("稀疏召回失败，已跳过: {e}")),
+                        }
+                    }
+                } else if mode == "hybrid" {
+                    // 稀疏路只在「编码器真的产出了 BM25 稀疏向量」时才走。
+                    // candle 只给稠密向量，所以 hybrid 实际一直是 dense + lexical —— 如实说明，
+                    // 别让调用方以为三路都跑了。
+                    warnings.push(
+                        "candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"
+                            .to_string(),
+                    );
+                    effective = "dense+lexical".to_string();
+                }
             }
         }
 
@@ -140,6 +149,13 @@ impl<'a> Engine<'a> {
     ) -> ApiResult<SearchResponse> {
         let started = std::time::Instant::now();
         let mut warnings: Vec<String> = Vec::new();
+
+        // 以图搜图必须有向量能力，没有模型时无法像文本检索那样退化成词法
+        if !self.state.encoder.is_available() {
+            return Err(ApiError::encoder_error(
+                "编码不可用（没有加载模型）：以图搜图需要向量编码，请用 --model-dir 指定模型目录，或加 --mock",
+            ));
+        }
 
         let mut space_warnings: Vec<String> = Vec::new();
         if !self.state.spaces_are_consistent(&mut space_warnings)? {

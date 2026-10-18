@@ -114,7 +114,10 @@ pub struct UpdateMetaRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncoderInfo {
+    /// 编码能力是否可用（有模型，或处于 --mock 模式）
     pub reachable: bool,
+    /// 是否 `--mock` 模式（未加载模型，向量由 sha256 派生）
+    pub mock: bool,
     pub model: Option<String>,
     pub device: Option<String>,
     pub dim: Option<i64>,
@@ -124,8 +127,6 @@ pub struct EncoderInfo {
     /// 权重是否已真正加载进内存（懒加载：首次编码后才为 true）
     pub loaded: bool,
     pub fingerprint: Option<String>,
-    /// 恒为 "candle"（侧车已移除，保留字段是为了前端/契约兼容）
-    pub mode: String,
     pub last_error: Option<String>,
     pub last_checked_at: String,
 }

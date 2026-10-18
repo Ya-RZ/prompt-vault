@@ -25,6 +25,8 @@ pub struct Config {
     /// 是否在索引里启用稀疏（BM25）向量 —— 只在建 shard 时生效
     pub sparse_enabled: bool,
     pub quant: QuantMode,
+    /// `--mock`：不加载模型，用确定性伪向量跑通链路（仅开发/冒烟）
+    pub mock: bool,
     /// candle 模型目录（None = 按约定路径查找）
     pub model_dir: Option<PathBuf>,
     /// candle 权重精度（f32 / f16 / bf16）
@@ -104,29 +106,47 @@ impl AppState {
             )?,
         }
         let vectors = VectorStore::open(&cfg.vector_dir, cfg.dim, cfg.sparse_enabled, cfg.quant)?;
-        // 编码只有一条路径：进程内 candle 加载本地模型。
-        // 模型目录在启动时解析（显式指定必须有效，找不到直接启动失败）——
-        // 比跑到第一次编码才发现「没有模型」早得多。权重本身仍是懒加载，2B 模型 mmap 要几十秒。
-        let model_dir = crate::encode::candle::resolve_model_dir(cfg.model_dir.as_deref())
-            .map_err(|e| anyhow::anyhow!("candle 模型目录解析失败: {}", e.message))?;
-        let dtype = crate::encode::candle::parse_dtype(&cfg.candle_dtype);
-        tracing::info!(
-            model_dir = %model_dir.display(),
-            dtype = %cfg.candle_dtype,
-            device = %cfg.candle_device,
-            hf_cache = %cfg.hf_cache_dir.display(),
-            max_length = cfg.max_length,
-            "candle 后端已配置（权重将在首次编码时加载）"
-        );
-        let candle = Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
-            model_dir,
-            cfg.hf_cache_dir.clone(),
-            cfg.max_length,
-            dtype,
-            crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
-            cfg.max_media_bytes,
-        )));
-        let encoder = EncoderClient::new(cfg.dim, candle);
+        // 编码只有一条真实路径：进程内 candle 加载本地模型。
+        //
+        // 两条不致命的退化路径（服务照常启动，health 报 DEGRADED）：
+        // - `--mock`：不加载模型，向量由 sha256 派生，只用于跑通链路；
+        // - 找不到模型：编码不可用，检索自动退化为纯词法。
+        // 模型目录在启动时解析，但**解析失败不再阻止启动** —— 用户可能只是还没下模型，
+        // 或者只想先用词法检索。
+        let candle = if cfg.mock {
+            tracing::warn!("--mock 模式：不加载模型，向量由 sha256 派生（仅用于链路验证）");
+            None
+        } else {
+            match crate::encode::candle::resolve_model_dir(cfg.model_dir.as_deref()) {
+                Ok(model_dir) => {
+                    let dtype = crate::encode::candle::parse_dtype(&cfg.candle_dtype);
+                    tracing::info!(
+                        model_dir = %model_dir.display(),
+                        dtype = %cfg.candle_dtype,
+                        device = %cfg.candle_device,
+                        hf_cache = %cfg.hf_cache_dir.display(),
+                        max_length = cfg.max_length,
+                        "candle 后端已配置（权重将在首次编码时加载）"
+                    );
+                    Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
+                        model_dir,
+                        cfg.hf_cache_dir.clone(),
+                        cfg.max_length,
+                        dtype,
+                        crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
+                        cfg.max_media_bytes,
+                    )))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e.message,
+                        "找不到可用模型：编码不可用，检索将退化为纯词法；用 --model-dir 指定模型目录，或加 --mock 跑链路验证"
+                    );
+                    None
+                }
+            }
+        };
+        let encoder = EncoderClient::new(cfg.dim, candle, cfg.mock);
 
         Ok(Arc::new(Self {
             db,

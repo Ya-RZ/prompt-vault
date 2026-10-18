@@ -10,8 +10,7 @@
 
 use std::path::Path;
 
-mod common;
-use common::mock_dense;
+use prompt_vault::encode::mock_dense;
 use prompt_vault::vector::{build_filter, QuantMode, VectorStore, KIND_ASSET, VEC_IMAGE, VEC_SPARSE_IMAGE};
 
 const DIM: usize = 64;
