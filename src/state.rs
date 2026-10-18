@@ -18,7 +18,10 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub media_dir: PathBuf,
     pub db_path: PathBuf,
-    pub vector_dir: PathBuf,
+    /// Qdrant 服务地址（`--qdrant-url`）
+    pub qdrant_url: String,
+    /// Qdrant 集合名（`--qdrant-collection`）
+    pub qdrant_collection: String,
     pub thumb_dir: PathBuf,
     pub export_dir: PathBuf,
     pub dim: usize,
@@ -77,7 +80,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(mut cfg: Config) -> anyhow::Result<Arc<Self>> {
+    pub async fn new(cfg: Config) -> anyhow::Result<Arc<Self>> {
         std::fs::create_dir_all(&cfg.data_dir)?;
         std::fs::create_dir_all(&cfg.media_dir)?;
         std::fs::create_dir_all(&cfg.thumb_dir)?;
@@ -99,26 +102,20 @@ impl AppState {
                 tracing::warn!(count = n, "发现上次未完成作业，已标记为 paused（可 resume）");
             }
         }
-        // 稀疏向量的开关只在建 shard 时生效（开发文档 §6.1：配置不可变），
-        // 所以以库里记的为准，命令行只能影响第一次建索引。
-        match db.get_meta(crate::db::META_SPARSE_ENABLED)? {
-            Some(v) => {
-                let recorded = v == "true";
-                if recorded != cfg.sparse_enabled {
-                    tracing::warn!(
-                        recorded,
-                        requested = cfg.sparse_enabled,
-                        "稀疏开关与已建索引不一致，以索引记录为准（改了要重建 shard）"
-                    );
-                }
-                cfg.sparse_enabled = recorded;
-            }
-            None => db.set_meta(
-                crate::db::META_SPARSE_ENABLED,
-                if cfg.sparse_enabled { "true" } else { "false" },
-            )?,
-        }
-        let vectors = VectorStore::open(&cfg.vector_dir, cfg.dim, cfg.sparse_enabled, cfg.quant)?;
+        // 向量配置（维度 / 稀疏 / 量化）在服务端集合创建时固定，之后改不了；
+        // 这里把本次使用的开关记进 meta，方便排查"这个库是什么配置建的"。
+        let _ = db.set_meta(
+            crate::db::META_SPARSE_ENABLED,
+            if cfg.sparse_enabled { "true" } else { "false" },
+        );
+        let vectors = VectorStore::connect(
+            &cfg.qdrant_url,
+            &cfg.qdrant_collection,
+            cfg.dim,
+            cfg.sparse_enabled,
+            cfg.quant,
+        )
+        .await?;
         // 编码只有一条真实路径：进程内 candle 加载本地模型。
         //
         // 两条不致命的退化路径（服务照常启动，health 报 DEGRADED）：

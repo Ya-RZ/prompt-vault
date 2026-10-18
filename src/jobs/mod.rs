@@ -615,7 +615,7 @@ async fn run_encode(
                     for notice in &outcome.notices {
                         tracing::info!(asset_id = *asset_id, path = %rel_path, "{notice}");
                     }
-                    match store_asset_vector(&state, *asset_id, outcome) {
+                    match store_asset_vector(&state, *asset_id, outcome).await {
                         Ok(()) => done += 1,
                         Err(e) => {
                             failed += 1;
@@ -634,7 +634,7 @@ async fn run_encode(
                                 for notice in &outcome.notices {
                                     tracing::info!(asset_id = *asset_id, path = %rel_path, "{notice}");
                                 }
-                                match store_asset_vector(&state, *asset_id, &outcome) {
+                                match store_asset_vector(&state, *asset_id, &outcome).await {
                                     Ok(()) => done += 1,
                                     Err(e) => {
                                         failed += 1;
@@ -690,7 +690,7 @@ async fn run_encode(
         match state.encoder.embed(items).await {
             Ok(outcomes) => {
                 for ((prompt_id, asset_id, text), outcome) in chunk.iter().zip(outcomes.iter()) {
-                    match store_prompt_vector(&state, *prompt_id, *asset_id, outcome) {
+                    match store_prompt_vector(&state, *prompt_id, *asset_id, outcome).await {
                         Ok(()) => done += 1,
                         Err(e) => {
                             failed += 1;
@@ -732,7 +732,7 @@ fn read_image_data_url(state: &Arc<AppState>, rel_path: &str) -> ApiResult<Strin
     Ok(crate::encode::image_data_url(&bytes, crate::encode::mime_for_path(rel_path)))
 }
 
-fn store_asset_vector(
+async fn store_asset_vector(
     state: &Arc<AppState>,
     asset_id: i64,
     outcome: &crate::encode::EncodeOutcome,
@@ -748,16 +748,19 @@ fn store_asset_vector(
         .sparse
         .as_ref()
         .map(|(idx, val)| (idx.as_slice(), val.as_slice()));
-    state.vectors.upsert_asset(
-        asset_id,
-        &outcome.dense,
-        sparse,
-        &outcome.fingerprint,
-        nsfw,
-        &tags,
-        added_at_ms,
-        "",
-    )?;
+    state
+        .vectors
+        .upsert_asset(
+            asset_id,
+            &outcome.dense,
+            sparse,
+            &outcome.fingerprint,
+            nsfw,
+            &tags,
+            added_at_ms,
+            "",
+        )
+        .await?;
     state.db.upsert_asset_vector(
         asset_id,
         &outcome.fingerprint,
@@ -767,7 +770,7 @@ fn store_asset_vector(
     )
 }
 
-fn store_prompt_vector(
+async fn store_prompt_vector(
     state: &Arc<AppState>,
     prompt_id: i64,
     asset_id: i64,
@@ -782,7 +785,8 @@ fn store_prompt_vector(
         .map(|(idx, val)| (idx.as_slice(), val.as_slice()));
     state
         .vectors
-        .upsert_prompt(prompt_id, asset_id, &outcome.dense, sparse, &outcome.fingerprint, nsfw, &tags)?;
+        .upsert_prompt(prompt_id, asset_id, &outcome.dense, sparse, &outcome.fingerprint, nsfw, &tags)
+        .await?;
     state.db.upsert_prompt_vector(prompt_id, &outcome.fingerprint, outcome.dense.len() as i64)
 }
 

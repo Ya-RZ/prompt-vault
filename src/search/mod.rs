@@ -92,7 +92,7 @@ impl<'a> Engine<'a> {
                 }
 
                 let outcome = self.encode_text(&query.q).await?;
-                let dense_list = self.dense_recall(&outcome, query.k)?;
+                let dense_list = self.dense_recall(&outcome, query.k).await?;
                 merge_ranked(&mut candidates, "dense", &dense_list);
 
                 // 稀疏路：只有编码器给了 sparse 且索引启用了稀疏才有
@@ -101,13 +101,12 @@ impl<'a> Engine<'a> {
                 if sparse_available {
                     if let Some((indices, values)) = outcome.sparse.as_ref() {
                         let filter = build_filter(Some(KIND_PROMPT), query.nsfw, &query.tags);
-                        match self.state.vectors.search_sparse(
-                            VEC_SPARSE_TEXT,
-                            indices,
-                            values,
-                            query.k.max(20) * 3,
-                            filter,
-                        ) {
+                        match self
+                            .state
+                            .vectors
+                            .search_sparse(VEC_SPARSE_TEXT, indices, values, query.k.max(20) * 3, filter)
+                            .await
+                        {
                             Ok(hits) => {
                                 let list: Vec<(i64, f64, Option<i64>)> = hits
                                     .iter()
@@ -168,7 +167,7 @@ impl<'a> Engine<'a> {
         let (outcome, query_image) = if let Some(asset_id) = asset_id {
             // 按已有资产找相似：先取它的向量，不再重复编码
             let asset = self.state.db.asset_must_exist(asset_id)?;
-            let stored = self.state.vectors.retrieve_vector(asset_id, VEC_IMAGE)?;
+            let stored = self.state.vectors.retrieve_vector(asset_id, VEC_IMAGE).await?;
             match stored {
                 Some(v) => (
                     EncodeOutcome {
@@ -210,14 +209,11 @@ impl<'a> Engine<'a> {
         let mut candidates: HashMap<i64, Candidate> = HashMap::new();
         let filter = build_filter(Some(KIND_ASSET), nsfw, &tags);
         let filter = filter.or_else(|| build_filter(Some(KIND_ASSET), nsfw, &[]));
-        let hits = self.state.vectors.search_dense(
-            VEC_IMAGE,
-            &outcome.dense,
-            k.max(20) * 2,
-            filter,
-            true,
-            Some(2.0),
-        )?;
+        let hits = self
+            .state
+            .vectors
+            .search_dense(VEC_IMAGE, &outcome.dense, k.max(20) * 2, filter, true, Some(2.0))
+            .await?;
         let list: Vec<(i64, f64, Option<i64>)> = hits
             .iter()
             .filter_map(|(_, score, payload)| {
@@ -231,8 +227,11 @@ impl<'a> Engine<'a> {
         if self.state.vectors.sparse_enabled() {
             if let Some((indices, values)) = outcome.sparse.as_ref() {
                 let filter = build_filter(Some(KIND_ASSET), nsfw, &tags);
-                if let Ok(hits) =
-                    self.state.vectors.search_sparse(VEC_SPARSE_IMAGE, indices, values, k.max(20) * 3, filter)
+                if let Ok(hits) = self
+                    .state
+                    .vectors
+                    .search_sparse(VEC_SPARSE_IMAGE, indices, values, k.max(20) * 3, filter)
+                    .await
                 {
                     let list: Vec<(i64, f64, Option<i64>)> = hits
                         .iter()
@@ -263,18 +262,26 @@ impl<'a> Engine<'a> {
     }
 
     /// 相似提示词（`GET /api/prompts/{id}/similar`）
-    pub fn similar_prompts(&self, prompt_id: i64, k: usize) -> ApiResult<Vec<SimilarPromptItem>> {
+    pub async fn similar_prompts(&self, prompt_id: i64, k: usize) -> ApiResult<Vec<SimilarPromptItem>> {
         self.state
             .db
             .get_prompt(prompt_id)?
             .ok_or_else(|| ApiError::not_found(format!("提示词 {prompt_id} 不存在")))?;
-        let dense = self.state.vectors.retrieve_vector(prompt_id + crate::vector::PROMPT_ID_OFFSET, VEC_TEXT)?;
+        let dense = self
+            .state
+            .vectors
+            .retrieve_vector(prompt_id + crate::vector::PROMPT_ID_OFFSET, VEC_TEXT)
+            .await?;
         let Some(dense) = dense else {
             return Err(ApiError::conflict(format!(
                 "提示词 {prompt_id} 还没有向量，无法找相似（先跑一次编码作业）"
             )));
         };
-        let hits = self.state.vectors.search_dense(VEC_TEXT, &dense, k + 5, None, true, Some(2.0))?;
+        let hits = self
+            .state
+            .vectors
+            .search_dense(VEC_TEXT, &dense, k + 5, None, true, Some(2.0))
+            .await?;
         let mut out = Vec::new();
         for (pid, score, payload) in hits {
             // 排除自己
@@ -331,17 +338,19 @@ impl<'a> Engine<'a> {
 
     /// 稠密召回：文本查 text（提示词点）与 image（资产点）两个向量名，合并。
     /// 返回 (asset_id, score, 命中的提示词 id)。
-    fn dense_recall(&self, outcome: &EncodeOutcome, k: usize) -> ApiResult<Vec<(i64, f64, Option<i64>)>> {
+    async fn dense_recall(
+        &self,
+        outcome: &EncodeOutcome,
+        k: usize,
+    ) -> ApiResult<Vec<(i64, f64, Option<i64>)>> {
         let mut out: Vec<(i64, f64, Option<i64>)> = Vec::new();
         let filter_prompt = build_filter(Some(KIND_PROMPT), None, &[]);
-        if let Ok(hits) = self.state.vectors.search_dense(
-            VEC_TEXT,
-            &outcome.dense,
-            k.max(20) * 2,
-            filter_prompt,
-            true,
-            Some(2.0),
-        ) {
+        if let Ok(hits) = self
+            .state
+            .vectors
+            .search_dense(VEC_TEXT, &outcome.dense, k.max(20) * 2, filter_prompt, true, Some(2.0))
+            .await
+        {
             for (_, score, payload) in hits {
                 if let Some(aid) = prompt_asset_id(&payload) {
                     out.push((aid, score as f64, payload_matched_prompt(&payload)));
@@ -349,14 +358,12 @@ impl<'a> Engine<'a> {
             }
         }
         let filter_asset = build_filter(Some(KIND_ASSET), None, &[]);
-        if let Ok(hits) = self.state.vectors.search_dense(
-            VEC_IMAGE,
-            &outcome.dense,
-            k.max(20) * 2,
-            filter_asset,
-            true,
-            Some(2.0),
-        ) {
+        if let Ok(hits) = self
+            .state
+            .vectors
+            .search_dense(VEC_IMAGE, &outcome.dense, k.max(20) * 2, filter_asset, true, Some(2.0))
+            .await
+        {
             for (_, score, payload) in hits {
                 if let Some(aid) = payload_asset_id_or_row(&payload) {
                     out.push((aid, score as f64, None));

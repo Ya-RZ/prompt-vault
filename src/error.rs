@@ -95,12 +95,6 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
-impl From<qdrant_edge::OperationError> for ApiError {
-    fn from(e: qdrant_edge::OperationError) -> Self {
-        ApiError::internal(format!("Qdrant Edge 错误: {e}"))
-    }
-}
-
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         ApiError::internal(e.to_string())

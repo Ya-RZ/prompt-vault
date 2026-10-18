@@ -206,13 +206,10 @@ pub async fn similar_by_kind(
                     "candle 后端不产出 BM25 稀疏向量，纯稀疏检索暂不可用；请用 mode=lexical 或 hybrid",
                 ));
             };
-            let hits = state.vectors.search_sparse(
-                crate::vector::VEC_SPARSE_TEXT,
-                &indices,
-                &values,
-                k,
-                None,
-            )?;
+            let hits = state
+                .vectors
+                .search_sparse(crate::vector::VEC_SPARSE_TEXT, &indices, &values, k, None)
+                .await?;
             res.render(Json(serde_json::json!({
                 "query": q,
                 "mode": "sparse",

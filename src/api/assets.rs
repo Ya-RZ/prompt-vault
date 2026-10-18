@@ -47,7 +47,11 @@ pub async fn delete_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
     let prompt_ids: Vec<i64> = state.db.prompts_for(id)?.iter().map(|p| p.id).collect();
 
     // 向量两路一起删（开发文档 §13 第 7 条），删完必须 optimize（§6.3 没有后台 optimizer）
-    let vector_deleted = state.vectors.delete_asset_and_prompts(id, &prompt_ids).is_ok();
+    let vector_deleted = state
+        .vectors
+        .delete_asset_and_prompts(id, &prompt_ids)
+        .await
+        .is_ok();
     let _ = state.vectors.optimize();
     let _ = state.vectors.flush();
 
@@ -91,15 +95,18 @@ pub async fn add_prompt(req: &mut Request, depot: &mut Depot, res: &mut Response
                     .sparse
                     .as_ref()
                     .map(|(idx, val)| (idx.as_slice(), val.as_slice()));
-                state.vectors.upsert_prompt(
-                    prompt_id,
-                    id,
-                    &outcome.dense,
-                    sparse,
-                    &outcome.fingerprint,
-                    nsfw,
-                    &tags,
-                )?;
+                state
+                    .vectors
+                    .upsert_prompt(
+                        prompt_id,
+                        id,
+                        &outcome.dense,
+                        sparse,
+                        &outcome.fingerprint,
+                        nsfw,
+                        &tags,
+                    )
+                    .await?;
                 state.db.upsert_prompt_vector(prompt_id, &outcome.fingerprint, outcome.dense.len() as i64)?;
                 let _ = state.vectors.flush();
             }
@@ -150,9 +157,12 @@ pub async fn update_meta(req: &mut Request, depot: &mut Depot, res: &mut Respons
     // payload 里的 tags/nsfw 是过滤用的，必须同步，否则标签筛选会失效
     let tags = state.db.tags_for(id)?;
     let nsfw = state.db.get_asset(id)?.map(|a| a.nsfw).unwrap_or(false);
-    let _ = state.vectors.set_asset_payload(id, nsfw, &tags);
+    let _ = state.vectors.set_asset_payload(id, nsfw, &tags).await;
     for prompt in state.db.prompts_for(id)? {
-        let _ = state.vectors.set_prompt_payload(prompt.id, id, nsfw, &tags);
+        let _ = state
+            .vectors
+            .set_prompt_payload(prompt.id, id, nsfw, &tags)
+            .await;
     }
     let _ = state.vectors.flush();
 
@@ -181,7 +191,7 @@ pub async fn similar_prompts(req: &mut Request, depot: &mut Depot, res: &mut Res
     let id = req.param::<i64>("id").ok_or_else(|| ApiError::bad_request("id 非法"))?;
     let k = req.query::<usize>("k").unwrap_or(20).clamp(1, 100);
     let engine = Engine::new(&state);
-    let items = engine.similar_prompts(id, k)?;
+    let items = engine.similar_prompts(id, k).await?;
     res.render(Json(serde_json::json!({ "items": items, "total": items.len() })));
     Ok(())
 }

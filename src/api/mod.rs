@@ -168,7 +168,7 @@ pub async fn health(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let encoder = crate::encode::health_snapshot(&state.encoder);
     let golden = state.golden_snapshot();
     let index_fp = state.index_fingerprint()?;
-    let points = state.vectors.points_estimate();
+    let points = state.vectors.points_estimate().await;
     let (assets_total, _, _, _, _) = state.db.count_assets()?;
     let (prompts_total, _prompts_encoded) = state.db.count_prompts()?;
     let pending = state.db.pending_encode_count()?;
@@ -191,7 +191,7 @@ pub async fn health(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
             dense_size: state.cfg.dim as i64,
             sparse_enabled: state.vectors.sparse_enabled(),
             quantization: state.vectors.quantization().as_str().to_string(),
-            dir: state.cfg.vector_dir.display().to_string(),
+            dir: format!("{}#{}", state.vectors.url(), state.vectors.collection()),
         },
         db: crate::types::DbInfo {
             path: state.cfg.db_path.display().to_string(),

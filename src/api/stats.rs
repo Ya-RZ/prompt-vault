@@ -25,7 +25,7 @@ pub async fn stats(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
         assets: AssetsCounts { total, images, videos, nsfw, bytes },
         prompts: PromptsCounts { total: prompts_total, encoded: prompts_encoded, pending },
         vectors: VectorsCounts {
-            points: state.vectors.points_estimate(),
+            points: state.vectors.points_estimate().await,
             dense_size: state.cfg.dim as i64,
             sparse_enabled: state.vectors.sparse_enabled(),
             disk_bytes: state.vectors.disk_bytes(),
@@ -45,7 +45,7 @@ pub async fn stats(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
 /// facet：分布优先走 Qdrant 的 `facet()`（开发文档 §7.2），取不到再降级 SQL，
 /// 并在 `source` 字段里如实标注数据来自哪里。
 /// 只统计资产点（不含提示词点）。
-fn assets_only() -> qdrant_edge::Filter {
+fn assets_only() -> qdrant_client::qdrant::Filter {
     crate::vector::filter_by_kind(crate::vector::KIND_ASSET)
 }
 
@@ -83,7 +83,11 @@ pub async fn facets(req: &mut Request, depot: &mut Depot, res: &mut Response) ->
                 .map(|CountItem { key, count }| FacetItem { value: key, count })
                 .collect(),
         ),
-        "nsfw" => match state.vectors.facet(crate::vector::F_NSFW, limit, Some(assets_only())) {
+        "nsfw" => match state
+            .vectors
+            .facet(crate::vector::F_NSFW, limit, Some(assets_only()))
+            .await
+        {
             Ok(hits) if !hits.is_empty() => (
                 "qdrant-facet".to_string(),
                 hits.into_iter().map(|(value, count)| FacetItem { value, count }).collect(),

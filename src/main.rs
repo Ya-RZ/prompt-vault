@@ -1,7 +1,7 @@
 //! prompt-vault 主服务入口（Salvo 1.0.1）。
 //!
 //! 启动顺序（开发文档 §9.4）：
-//! 1. 打开 SQLite + Qdrant Edge shard；
+//! 1. 打开 SQLite，并连接 Qdrant Server（集合不存在则创建）；
 //! 2. 解析模型目录并打印编码指纹与设备（candle 进程内，没有远端可探）；
 //! 3. 跑一次金标校验 —— **failed 就拒绝启动**；
 //!    `unsupported`（当前后端没有历史基线）只记录，不拦。
@@ -29,6 +29,13 @@ struct Args {
     port: u16,
     #[arg(long, env = "PV_DATA_DIR", default_value = "data")]
     data_dir: PathBuf,
+    /// Qdrant 服务地址。客户端走 gRPC（默认端口 6334）；
+    /// 填 REST 端口 6333 时会自动换成 6334。
+    #[arg(long, env = "PV_QDRANT_URL", default_value = "http://127.0.0.1:6334")]
+    qdrant_url: String,
+    /// Qdrant 集合名
+    #[arg(long, env = "PV_QDRANT_COLLECTION", default_value = "pv")]
+    qdrant_collection: String,
     #[arg(long, env = "PV_MEDIA_DIR", default_value = "media")]
     media_dir: PathBuf,
     /// candle 模型目录；不指定则按约定路径查找（显式指定必须有效）
@@ -93,20 +100,6 @@ async fn main() {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "info,quinn=warn".to_string());
-    // qdrant-edge 0.8.0 把 `common` 模块声明成私有的（`mod common;`），
-    // 既没有 `init_feature_flags` 也没有 `MULTI_MMAP_SUPPORT_CHECK_RESULT` 的对外入口，
-    // 于是它每次读 feature flags / 多 mmap 开关都会打一条 WARN（启动一次至少 6 条）。
-    // 这些告警对调用方没有任何可操作信息：未初始化时库用的就是 `FeatureFlags::default()`，
-    // 与显式初始化成默认值的行为完全一致。
-    //
-    // 按模块前缀压到 error：`qdrant_edge::common` 同时覆盖 `common::flags` 与
-    // `common::mmap::ops` 两个 target（实测写到更细的 `…::common::flags` 反而不生效，
-    // 所以用模块级前缀）。其余模块（如 `qdrant_edge::wal`）的日志照常输出。
-    // 上游暴露初始化入口后应改回真正的初始化。
-    // 想临时看回这些日志：RUST_LOG="info,qdrant_edge::common=warn"。
-    // 另：该库对「多 mmap 支持」的兜底开关是环境变量 QDRANT_NO_MULTI_MMAP=1
-    // （数据目录挂在 Docker-on-Windows 之类场景下建议打开）。
-    let log_filter = format!("{log_filter},qdrant_edge::common=error");
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(log_filter))
         .init();
@@ -124,7 +117,8 @@ async fn main() {
         data_dir: args.data_dir.clone(),
         media_dir: args.media_dir.clone(),
         db_path: args.data_dir.join("pv.sqlite"),
-        vector_dir: args.data_dir.join("qdrant"),
+        qdrant_url: args.qdrant_url.clone(),
+        qdrant_collection: args.qdrant_collection.clone(),
         thumb_dir: args.data_dir.join("thumbs"),
         export_dir: args.data_dir.join("exports"),
         dim: args.dim,
@@ -145,7 +139,7 @@ async fn main() {
         max_pixels: args.max_pixels,
     };
 
-    let state = match AppState::new(cfg) {
+    let state = match AppState::new(cfg).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("启动失败: {e:#}");
@@ -190,10 +184,8 @@ async fn main() {
     // 关键：EdgeShard 只在 drop 时 flush，被 kill -9/sigterm 直接终止就会丢数据（实测过），
     // 所以这里拦下信号，先 flush 再退出。
     wait_for_shutdown().await;
-    tracing::info!("收到退出信号：flush 向量索引…");
-    if let Err(e) = shutdown_state.vectors.flush() {
-        tracing::error!(error = %e, "退出前 flush 失败");
-    }
+    tracing::info!("收到退出信号：等待在途请求结束…");
+    // 向量数据由 Qdrant 服务端负责持久化，这里不再需要显式 flush。
     if let Err(e) = shutdown_state.db.with_conn(|c| c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")) {
         tracing::warn!(error = %e, "SQLite checkpoint 失败（WAL 数据仍在，下次打开自动恢复）");
     }
@@ -246,7 +238,14 @@ fn print_banner(state: &Arc<AppState>, flags: &Flags) {
     println!("  编码后端 : candle（进程内）  device={device}");
     println!("  模型目录 : {model_dir}");
     println!("  SQLite   : {}", state.cfg.db_path.display());
-    println!("  向量索引 : {}  dim={} 量化={} 稀疏={}", state.cfg.vector_dir.display(), state.cfg.dim, state.vectors.quantization().as_str(), sparse);
+    println!(
+        "  向量索引 : {}  collection={}  dim={} 量化={} 稀疏={}",
+        state.vectors.url(),
+        state.vectors.collection(),
+        state.cfg.dim,
+        state.vectors.quantization().as_str(),
+        sparse
+    );
     println!("  索引指纹 : {index_fp}");
     println!("  媒体目录 : {}", state.cfg.media_dir.display());
     println!("  缩略图   : {}（等比缩放、不裁剪，按需生成）", state.cfg.thumb_dir.display());

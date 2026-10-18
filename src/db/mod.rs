@@ -1,6 +1,6 @@
 //! SQLite 层：schema、连接、行结构、共享工具。
 //!
-//! 元数据只在 SQLite（开发文档 §8）；向量本体在 Qdrant Edge，这里只留**指纹**。
+//! 元数据只在 SQLite（开发文档 §8）；向量本体在 Qdrant Server，这里只留**指纹**。
 
 pub mod assets;
 pub mod jobs;

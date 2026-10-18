@@ -1,6 +1,6 @@
 //! 运维口：向量导出/重建/优化、金标校验、编码器状态刷新（开发文档 §6.3 导出通路 + §9）。
 //!
-//! ⚠️ `qdrant-edge` 只有 0.8.0，所以导出通路是**必做项**：保证随时能搬家（§6.3）。
+//! 导出通路仍然保留：即使换成 Qdrant Server，JSONL 仍是跨实现搬家的最稳格式。
 
 use salvo::prelude::*;
 
@@ -13,12 +13,13 @@ use crate::types::{GoldenInfo, MessageResponse};
 pub async fn vector_info(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = st(depot)?.clone();
     res.render(Json(serde_json::json!({
-        "dir": state.cfg.vector_dir.display().to_string(),
+        "url": state.vectors.url(),
+        "collection": state.vectors.collection(),
         "dim": state.cfg.dim,
         "sparse_enabled": state.vectors.sparse_enabled(),
         "quantization": state.vectors.quantization().as_str(),
-        "points": state.vectors.points_estimate(),
-        "assets_points": state.vectors.count_assets().ok(),
+        "points": state.vectors.points_estimate().await,
+        "assets_points": state.vectors.count_assets().await.ok(),
         "disk_bytes": state.vectors.disk_bytes(),
         "index_fingerprint": state.index_fingerprint()?,
         "vector_names": [
@@ -38,7 +39,7 @@ pub async fn vector_optimize(depot: &mut Depot, res: &mut Response) -> ApiResult
     res.render(Json(serde_json::json!({
         "optimized": optimized,
         "note": "删除是标记删除，必须调 optimize（开发文档 §6.3：没有后台 optimizer）",
-        "points": state.vectors.points_estimate(),
+        "points": state.vectors.points_estimate().await,
     })));
     Ok(())
 }
@@ -57,7 +58,7 @@ pub async fn vector_export(req: &mut Request, depot: &mut Depot, res: &mut Respo
                 .export_dir
                 .join(format!("vectors-{}.jsonl", chrono::Utc::now().format("%Y%m%d-%H%M%S")))
         });
-    let points = state.vectors.export_jsonl(&path)?;
+    let points = state.vectors.export_jsonl(&path).await?;
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     res.render(Json(serde_json::json!({
         "exported_points": points,
@@ -78,7 +79,7 @@ pub async fn vector_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ApiError::bad_request("缺少 path"))?;
-    let imported = state.vectors.import_jsonl(path)?;
+    let imported = state.vectors.import_jsonl(path).await?;
     let _ = state.vectors.optimize();
     res.render(Json(serde_json::json!({ "imported_points": imported, "path": path })));
     Ok(())
