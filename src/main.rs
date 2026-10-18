@@ -67,9 +67,21 @@ struct Args {
     /// 图片宽高比上限（长边/短边，默认 8.0）；超过直接拒绝编码，0 表示不检查
     #[arg(long, env = "PV_MAX_ASPECT_RATIO", default_value_t = 8.0)]
     max_aspect_ratio: f64,
-    /// 图片像素安全区上限（默认 3,145,728 ≈ 1774²）；更大的图会先等比缩小
-    #[arg(long, env = "PV_MAX_PIXELS", default_value_t = 3_145_728)]
-    max_pixels: u64,
+    /// 图片像素安全区上限；不指定时按显存自动选择（详见 --help）
+    #[arg(
+        long,
+        env = "PV_MAX_PIXELS",
+        long_help = "图片像素安全区上限（超过则先等比缩小，再送去编码）。\n\n\
+不指定时按显卡显存自动选择：\n\
+  < 10 GiB   → 1,048,576（约 768 视觉 token；8GB 卡实测约 2.8 s/张）\n\
+  10–24 GiB  → 1,572,864（约 1280 token）\n\
+  ≥ 24 GiB   → 3,145,728（约 1536 token）\n\
+无 CUDA（CPU 推理）或拿不到显存信息时，取最保守的 1,048,576。\n\n\
+为什么按显存分档：像素上限过高会让显存贴顶，candle 的分配器会陷入\n\
+「清缓存 → 重试 → 同步」，单张耗时从 2.8 秒涨到 24 秒（实测 4060 Laptop 8GB）。\n\n\
+注意：该值会写进编码指纹，改动后已有索引必须全量重编码。"
+    )]
+    max_pixels: Option<u64>,
 }
 
 #[tokio::main]

@@ -43,8 +43,8 @@ pub struct Config {
     pub max_media_bytes: u64,
     /// 图片宽高比上限（长边/短边）；超限直接拒绝编码（0 表示不检查）
     pub max_aspect_ratio: f64,
-    /// 图片像素安全区上限；超过则先等比缩小（与 max_length 的 token 预算相关）
-    pub max_pixels: u64,
+    /// 图片像素安全区上限；`None` = 按显存自动选择（见 candle::auto_max_pixels）
+    pub max_pixels: Option<u64>,
 }
 
 impl Config {
@@ -141,7 +141,6 @@ impl AppState {
                         max_length = cfg.max_length,
                         "candle 后端已配置（权重将在首次编码时加载）"
                     );
-                    crate::encode::candle::warn_if_max_pixels_overridden(&model_dir, cfg.max_pixels);
                     Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
                         model_dir,
                         crate::encode::candle::CandleOptions {

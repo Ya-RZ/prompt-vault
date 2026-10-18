@@ -116,6 +116,36 @@ impl DeviceSpec {
     }
 }
 
+/// 按显存选像素上限（未显式指定 `--max-pixels` 时使用）。
+///
+/// 依据实测（RTX 4060 Laptop 8 GiB + f16，同一张图）：
+/// - 786,432 → 1.5 s/张
+/// - 1,048,576 → 2.8 s/张（甜点）
+/// - 1,310,720 → 10 s/张（显存贴顶，分配抖动）
+/// - 1,572,864 → 24 s/张
+///
+/// 所以按显存保守分档：宁可少一点细节，也不掉进 10 倍慢的区间。
+pub fn auto_max_pixels(device_label: &str) -> (u64, String) {
+    let ordinal = device_label
+        .strip_prefix("cuda:")
+        .and_then(|s| s.parse::<usize>().ok());
+    let Some(ordinal) = ordinal else {
+        return (1_048_576, "CPU 推理，取保守档".to_string());
+    };
+    let Some(info) = cuda_inventory().into_iter().find(|d| d.ordinal == ordinal) else {
+        return (1_048_576, format!("cuda:{ordinal} 信息不可读，取保守档"));
+    };
+    let gib = info.total_mem_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let value = if gib < 10.0 {
+        1_048_576
+    } else if gib < 24.0 {
+        1_572_864
+    } else {
+        3_145_728
+    };
+    (value, format!("显存 {gib:.1} GiB"))
+}
+
 /// 一张 NVIDIA 卡的静态信息。只有带 `cuda` feature 且驱动可用时才可能非空。
 #[derive(Debug, Clone)]
 pub struct CudaDeviceInfo {
@@ -294,33 +324,52 @@ pub struct CandleOptions {
     pub max_media_bytes: u64,
     /// 宽高比上限（0 = 不检查）
     pub max_aspect_ratio: f64,
-    /// 像素安全区上限
-    pub max_pixels: u64,
+    /// 像素安全区上限；`None` = 按显存自动选择（见 [`auto_max_pixels`]）
+    pub max_pixels: Option<u64>,
 }
 
 impl CandleEncoder {
     pub fn new(model_dir: impl Into<PathBuf>, opts: CandleOptions) -> Self {
+        let model_dir: PathBuf = model_dir.into();
         let (device, device_label, device_name) = resolve_device(opts.device);
-        // 显存偏小时提示：像素上限过高会让显存贴顶，candle 的分配器会陷入
-        // 「清缓存 → 重试 → 同步」，单张耗时能从 1.5s 掉到 20s+（实测 4060 Laptop 8GB）。
+
+        // 未显式指定时按显存分档：8GB 卡上 1,048,576 是甜点，再往上会让显存贴顶，
+        // 单张耗时从 2.8s 掉到 10–24s（实测）。
+        let max_pixels = match opts.max_pixels {
+            Some(v) => v,
+            None => {
+                let (value, reason) = auto_max_pixels(&device_label);
+                tracing::info!(
+                    max_pixels = value,
+                    reason = %reason,
+                    "未指定 --max-pixels，按显存自动选择"
+                );
+                value
+            }
+        };
+
+        // 提示模型原始配置里的 max_pixels 不生效（真正生效的是缓存副本 / CLI 值）
+        warn_if_max_pixels_overridden(&model_dir, max_pixels);
+
+        // 显式指定了过高的值、而显存偏小时给一条警告
         if let Some(ordinal) = device_label
             .strip_prefix("cuda:")
             .and_then(|s| s.parse::<usize>().ok())
         {
             if let Some(info) = cuda_inventory().into_iter().find(|d| d.ordinal == ordinal) {
                 let vram_gib = info.total_mem_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                if opts.max_pixels > 1_048_576 && vram_gib < 12.0 {
+                if max_pixels > 1_048_576 && vram_gib < 12.0 {
                     tracing::warn!(
                         vram_gb = format!("{vram_gib:.1}"),
-                        max_pixels = opts.max_pixels,
-                        "显存偏小：当前像素上限可能让显存贴顶，编码速度会下降 10 倍以上；\
-                         建议 --max-pixels 786432（8GB 级显卡的实测甜点）"
+                        max_pixels,
+                        "显存偏小：当前像素上限可能让显存贴顶，编码速度会下降数倍；\
+                         8GB 级显卡建议 --max-pixels 1048576"
                     );
                 }
             }
         }
         Self {
-            model_dir: model_dir.into(),
+            model_dir,
             cache_dir: opts.cache_dir,
             max_length: opts.max_length,
             dtype: opts.dtype,
@@ -329,7 +378,7 @@ impl CandleEncoder {
             device_name,
             max_media_bytes: opts.max_media_bytes,
             max_aspect_ratio: opts.max_aspect_ratio,
-            max_pixels: opts.max_pixels,
+            max_pixels,
             loaded: Mutex::new(None),
             golden: Mutex::new(None),
         }
