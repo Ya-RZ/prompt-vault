@@ -4,6 +4,7 @@
 > 任何一侧改了接口，先改本文件再改代码。
 > 依据：`开发文档.md` §7（API 契约）、§8（数据模型）、§9（双重检测）、§6（Qdrant Edge）。
 > 生成于 2026-10-16。
+> **2026-10-18 修订：编码改为进程内 candle（§1 重写），侧车契约、`encoder.mode`/`url` 字段已删除。**
 
 ---
 
@@ -11,7 +12,7 @@
 
 | 项 | 约定 |
 | --- | --- |
-| 监听 | `127.0.0.1:8918`（默认；`--port` 覆盖）。侧车在 `127.0.0.1:8917`，只被主服务调用 |
+| 监听 | `127.0.0.1:8918`（默认；`--port` 覆盖）。编码在进程内完成（candle），没有独立侧车进程 |
 | 编码 | 请求/响应统一 `application/json; charset=utf-8` |
 | 时间 | RFC3339 UTC 字符串，例 `"2026-10-16T12:00:00Z"` |
 | 分页 | 请求 `?page=1&page_size=50`（`page_size` 上限 200）→ 响应 `{ "items": [...], "total": 123, "page": 1, "page_size": 50 }` |
@@ -27,89 +28,57 @@
 | --- | --- | --- |
 | `BAD_REQUEST` | 400 | 参数缺失或非法 |
 | `NOT_FOUND` | 404 | 资产/作业/提示词不存在 |
-| `ENCODER_UNREACHABLE` | 503 | 编码侧车连不上（`/api/health.encoder.reachable=false`） |
+| `ENCODER_UNREACHABLE` | 503 | 编码不可用：没有模型、模型加载失败，或该接口必须有向量能力（`/api/health.encoder.reachable=false`） |
 | `FINGERPRINT_MISMATCH` | 409 | 写入被拒：向量指纹与索引指纹不一致（**拒绝，不是警告**，开发文档 §13 第 4 条） |
-| `PAYLOAD_TOO_LARGE` | 413 | 图片超序列预算，会被静默截断。`detail` 带侧车的 `plan` |
-| `ENCODER_ERROR` | 502 | 侧车返回 500 或响应畸形 |
-| `GOLDEN_FAILED` | 409 | 金标校验不通过（`/v1/verify` 未通过），禁止开始导入/编码作业 |
-| `SPARSE_UNAVAILABLE` | 501 | 稀疏路不可用（索引未启用稀疏，或侧车未返回 `sparse`）——**显式失败，不假装成功** |
+| `PAYLOAD_TOO_LARGE` | 413 | 图片超过 `--max-media-bytes` 上限 |
+| `ENCODER_ERROR` | 502 | 编码过程失败（模型加载/推理报错） |
+| `GOLDEN_FAILED` | 409 | 金标校验不通过，禁止开始导入/编码作业（当前后端恒 `unsupported`，不会走到这里） |
+| `SPARSE_UNAVAILABLE` | 501 | 稀疏路不可用（索引未启用稀疏，或编码器不产出 `sparse`）——**显式失败，不假装成功** |
 | `CONFLICT` | 409 | 作业状态冲突（如已完成的作业再次 resume） |
 | `INTERNAL` | 500 | 内部错误 |
 
 ---
 
-## 1. 主服务 ↔ Python 编码侧车（上游契约，**侧车禁改**，只读对接）
+## 1. 编码后端（进程内 candle）
 
-侧车代码位于 `embed-server/`，本项目**不修改**它。主服务按下面的现状对接。
+编码在**主服务进程内**完成：candle + fastembed 7.1.1 加载本地 `Qwen3-VL-Embedding-2B`。
+（历史：原先通过 `embed-server/` 的 Python HTTP 侧车编码，该侧车与 `live` 模式已随代码移除。）
 
-### 1.1 现状（侧车已实现）
-
-```
-GET  /health                              → 状态、设备、维度、指纹、模板开销、模型目录
-POST /v1/embeddings                       → 编码（稠密 2048 维）
-GET  /metrics                             → Prometheus
-```
-
-`POST /v1/embeddings` 请求：
-
-```json
-{ "input": [ { "text": "…" }, { "image": "D:/pics/a.jpg" }, { "text": "…", "image": "…" } ] }
-```
-
-响应（`data[i]` 与 `input[i]` 同序）：
-
-```json
-{
-  "dim": 2048,
-  "fingerprint": "Qwen3-VL-Embedding-2B|bfloat16|dim=2048|pool=lasttoken|norm=L2|max_pixels=1843200|max_length=8192|script=8ffa74a1a6bb|weights=4255140312|device=cpu",
-  "data": [ { "index": 0, "kind": "image", "embedding": [0.013, "…"], "resized": "1632x1088", "vision_tokens": 1734 } ]
-}
-```
-
-`image` 接受本地路径 / http(s) URL / `data:image/...;base64,...`。
-**主服务以 `data:image/...;base64,...` 形式提交**，避免路径编码与 Windows 盘符问题。
-
-### 1.2 预留给侧车的两项（**侧车未实现，主服务必须降级运行**）
-
-| 能力 | 侧车现状 | 主服务行为 |
-| --- | --- | --- |
-| **稀疏向量**（开发文档 §5.4 改动 2） | 每项**不含** `sparse` | 返回项带 `sparse` 就用（稀疏路召回生效）；不带则**稀疏路自动降级**，`/api/search/*` 响应的 `warnings` 里显式说明「稀疏路不可用」。**不允许**因为缺 sparse 就 500 |
-| **金标校验**（开发文档 §5.4 改动 1、§7.3） | **没有** `/v1/verify` | 启动时探测：404/405 → `golden.status = "unsupported"`，**不拒绝启动**，但 `/api/health` 必须显式暴露 `unsupported`，作业开始前也照此记录 |
-
-> 设计约束：侧车只增不改，主服务对这两项一律「有则用、无则降级并显式暴露」，不得静默假装成功。
-
-### 1.3 主服务对侧车的硬规则（开发文档 §10 铁律 1、§9）
-
-1. 侧车 `/health` 的 `fingerprint` 落库为**当前索引指纹**（`meta` 表 `index_fingerprint`）。
-2. 写入前比对指纹；不一致 → `FINGERPRINT_MISMATCH` **拒绝写入**。
-3. 查询时若侧车指纹与索引指纹不一致 → 拒绝检索，返回 `FINGERPRINT_MISMATCH`（同一空间才能比）。
-4. `413` 原样透出为 `PAYLOAD_TOO_LARGE`，`detail` 带 `plan`。
-5. 侧车的 `max_pixels` / `max_length` 等不进主服务配置，只从指纹里读，避免两处配置漂移。
-
-### 1.4 进程内 candle 后端（`--encoder candle`）
-
-编码不再必须经过 HTTP 侧车：`--encoder candle` 时由主服务**在进程内**用 candle 加载
-`Qwen3-VL-Embedding-2B`（fastembed 7.1.1 的 `Qwen3VLEmbedding`）。
+### 1.1 模型目录与加载
 
 | 项 | 行为 |
 | --- | --- |
-| 权重加载 | `VarBuilder::from_mmaped_safetensors`，4.2 GB 权重 mmap 进内存，不复制 |
-| 加载时机 | **懒加载**：第一次编码时才加载（2B 模型加载要几十秒），启动只解析目录 |
-| 模型目录 | `--model-dir` / `PV_MODEL_DIR`（显式指定必须有效）→ `<exe目录>/models/qwen3-vl-embedding-2b` → `<cwd>/models/…` → `<cwd>/embed-server/models/…` → `<cwd>/../embed-server/models/…` |
-| 强制离线 | 把模型目录伪装成 HF 缓存（`<model_dir>/.hf-home/hub/models--Qwen--Qwen3-VL-Embedding-2B/snapshots/local/` + `refs/main`），并设 `HF_HOME` / `HF_HUB_OFFLINE=1`。缓存里除 `preprocessor_config.json` 用**改写副本**外，其余文件硬链接（跨设备时退回复制） |
-| max_pixels | 缓存副本里写 **1,843,200**（官方参考脚本口径）；原始模型文件不动，避免影响侧车 |
-| dtype | `--candle-dtype f32`（默认）/ `f16` / `bf16` |
-| 指纹 | `Qwen3-VL-Embedding-2B|candle|dtype=f32|dim=2048|pool=lasttoken|norm=L2|max_pixels=1843200|max_length=8192|backend=fastembed-7.1|device=cpu` |
-| 与侧车的关系 | **指纹必然不同** → 索引闸门（§9）会拒绝混用，换后端必须全量重编码 |
+| 模型目录解析 | `--model-dir` / `PV_MODEL_DIR`（显式指定必须有效，不合法则视为“没有模型”）→ `<exe目录>/models/qwen3-vl-embedding-2b` → `<cwd>/models/…` → `<cwd>/../models/…` |
+| 权重加载 | **懒加载**：第一次编码才 mmap（4.2 GB 不复制），启动只解析目录 |
+| 强制离线 | 把模型目录伪装成 HF 缓存（`$HF_HOME/hub/models--Qwen--Qwen3-VL-Embedding-2B/snapshots/local/` + `refs/main`），并设 `HF_HUB_OFFLINE=1`；缓存里除 `preprocessor_config.json` 用**改写副本**（`max_pixels=1,843,200`）外，其余文件硬链接（跨设备退回复制） |
+| HF 缓存位置 | `--hf-cache-dir`（默认 `<data-dir>/hf-cache`），不写进模型目录（模型目录可能是只读挂载） |
+| 设备 | `--candle-device auto`（默认：二进制带 cuda 且驱动可用时用 GPU，否则 CPU）/ `cpu` / `cuda:N`；多卡时 auto 选取「算力优先、同算力比显存」 |
+| 精度 | `--candle-dtype f32`（默认）/ `f16` / `bf16` |
+| 指纹 | `Qwen/Qwen3-VL-Embedding-2B\|candle\|dtype=f32\|dim=2048\|pool=lasttoken\|norm=L2\|max_pixels=1843200\|max_length=8192\|backend=fastembed-7.1\|device=cpu` |
 
-**已知限制（不静默降级）**：
+### 1.2 没有模型时的行为
 
-1. **不支持图文混合输入**。`{text, image}` 同时出现的项直接返回 `400`，错误里带 `index`。（fastembed 的 `Qwen3VLEmbedding` 目前只实现 text-only / image-only；本项目的检索路径本就是 image / text 两个向量名分开存，不受影响。）
-2. **不回传 `resized` / `vision_tokens`**。这两个诊断字段只有侧车给，candle 版为 `null`。
-3. **不提供 sparse**。稀疏向量与编码器无关（本来就没由侧车提供），依旧走「索引启用稀疏 + 有 sparse 才用」的降级逻辑。
-4. **金标校验为 `unsupported`**。candle 与 Python 实现不同源，历史基线不通用。
+编码不可用**不阻止启动**：
 
----
+| 场景 | 行为 |
+| --- | --- |
+| 有模型 | `/api/health` → `READY`，`encoder.reachable=true` |
+| 没有模型 | 启动照常（日志 warn）；`/api/health` → `DEGRADED`、`encoder.reachable=false`；**文本检索自动退化为纯词法**（`effective_mode="lexical"`，`warnings` 里说明）；`mode=dense` 与以图搜图返回 `ENCODER_UNREACHABLE` |
+| `--mock` | 不加载模型，向量由 sha256 派生（指纹 `mock\|dim=2048\|v1\|device=cpu`），仅用于链路验证 |
+
+### 1.3 硬规则（开发文档 §10 铁律 1、§9）
+
+1. 当前编码指纹落库为**索引指纹**（`meta` 表 `index_fingerprint`），第一次写入时钉住。
+2. 写入前比对指纹；不一致 → `FINGERPRINT_MISMATCH` **拒绝写入**。
+3. 查询时若当前指纹与索引指纹不一致 → 拒绝检索并返回 `FINGERPRINT_MISMATCH`（同一空间才能比）。
+4. 编码不可用**不报 503 拦检索**：文本检索退化为词法；只有必须有向量的接口（以图搜图、`mode=dense`）才返回 `ENCODER_UNREACHABLE`。
+
+### 1.4 已知限制（不静默降级）
+
+1. **不支持图文混合输入**：`{text, image}` 同时存在 → `400`，`detail.index` 指向该输入项（fastembed 的 `Qwen3VLEmbedding` 只实现 text-only / image-only；本项目本就是 image / text 两个向量名分开存）。
+2. **不回传 `resized` / `vision_tokens`**：这两个诊断字段只由旧侧车提供，candle 版为 `null`。
+3. **不产出 sparse**：hybrid 实际是 dense + lexical，`warnings` 里显式说明；`SPARSE_UNAVAILABLE` 只在索引未启用稀疏或显式 `mode=sparse` 时出现。
+4. **金标校验为 `unsupported`**：candle 没有可复用的历史基线（与旧实现不同源），不拦作业。
 
 ## 2. 数据模型（SQLite，见 `migrations/0001_init.sql`）
 
@@ -157,25 +126,27 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
   "uptime_seconds": 42,
   "encoder": {
     "reachable": true,
-    "url": "http://127.0.0.1:8917",
+    "mock": false,
     "model": "Qwen/Qwen3-VL-Embedding-2B",
     "device": "cpu",
     "dim": 2048,
-    "model_dir": "/workspace/prompt-vault/embed-server/models/qwen3-vl-embedding-2b",
+    "model_dir": "/workspace/prompt-vault/models/qwen3-vl-embedding-2b",
     "max_pixels": 1843200,
     "max_length": 8192,
-    "fingerprint": "Qwen3-VL-Embedding-2B|bfloat16|dim=2048|…|device=cpu",
-    "mode": "live"
+    "loaded": false,
+    "fingerprint": "Qwen/Qwen3-VL-Embedding-2B|candle|dtype=f32|dim=2048|…|device=cpu",
+    "last_error": null,
+    "last_checked_at": "2026-10-18T12:00:00Z"
   },
   "golden": {
     "status": "unsupported",
     "passed": null,
-    "checked_at": null,
-    "detail": "侧车未提供 /v1/verify（开发文档 §5.4 改动 1 未实施）",
+    "checked_at": "2026-10-18T12:00:00Z",
+    "detail": "candle 后端没有可复用的历史基线（与旧实现不同源）；换后端后需全量重编码",
     "cos_text": null, "cos_image": null, "threshold": null, "device_mismatch": false
   },
   "index": {
-    "fingerprint": "Qwen3-VL-Embedding-2B|…|device=cpu",
+    "fingerprint": "Qwen/Qwen3-VL-Embedding-2B|candle|…|device=cpu",
     "points": 1234, "assets": 1200, "prompts": 34,
     "dense_size": 2048, "sparse_enabled": false, "quantization": "scalar-int8",
     "dir": "data/qdrant"
@@ -184,17 +155,20 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 }
 ```
 
-- `status`：`READY` | `DEGRADED`（侧车不可达、金标失败、指纹不一致）。
-  **侧车不可达不阻止启动**（只影响编码与检索），但要显式暴露。
-- `encoder.mode`：`live` | `mock`（见 §3.1）。
-- `golden.status`：`passed` | `failed` | `unsupported` | `unchecked`。
+- `status`：`READY` | `DEGRADED`（编码不可用、金标失败、指纹不一致）。
+  **没有模型不阻止启动**（编码不可用 + 检索退化），但要显式暴露。
+- `encoder.reachable`：编码能力是否可用（有模型或 `--mock`）。
+- `encoder.mock`：是否 `--mock` 模式（见 §3.1）。
+- `encoder.loaded`：权重是否已真正加载（懒加载，首次编码后才 `true`）。
+- `encoder` 没有 `mode` / `url` 字段：编码只有进程内一条路径。
+- `golden.status`：`passed` | `failed` | `unsupported` | `unchecked`（当前后端恒 `unsupported`）。
 
-### 3.1 mock 编码器（开发期开关）
+### 3.1 `--mock` 开关（开发期）
 
-`PV_ENCODER=mock` 或 `--encoder mock` 时，主服务**不调用侧车**，用内置确定性伪向量
-（sha256 派生、L2 归一化、2048 维、`fingerprint = "mock|dim=2048|v1"`）。
-用于在没有侧车/不跑模型的环境验证「导入 → 编码 → 入库 → 检索 → 前端」全链路。
-`/api/health.encoder.mode` 必须显示 `mock`，且前端页头显示醒目标记。
+`--mock`（或 `PV_MOCK=true`）时，主服务**不加载模型**，用内置确定性伪向量
+（sha256 派生、L2 归一化、2048 维、`fingerprint = "mock|dim=2048|v1|device=cpu"`），
+`encoder.mock=true`。用于在没有模型的环境验证「导入 → 编码 → 入库 → 检索 → 前端」全链路。
+前端页头据此显示 mock 标记。
 
 ### `GET /api/stats`
 
@@ -307,7 +281,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
   "mode": "hybrid",
   "effective_mode": "dense",
   "took_ms": 12,
-  "warnings": ["稀疏向量不可用：侧车未返回 sparse（开发文档 §5.4 改动 2 未实施），hybrid 已退化为 dense"],
+  "warnings": ["candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"],
   "items": [ {
     "score": 0.87,
     "sources": ["dense"],
@@ -328,7 +302,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 `multipart/form-data`：`file`（必填）或 `image_base64`；
 或 `application/json`：`{ "asset_id": 1 }`（按已有资产找相似）/ `{ "image_base64": "…" }`。
 
-查询参数 `k`(20) `tag` `nsfw` `max_pixels`(透传给侧车) `with_vector=false`
+查询参数 `k`(20) `tag` `nsfw` `with_vector=false`
 
 响应与 `/api/search/text` 同构（`query` 为 `"<file:cat.jpg>"` 或 `"<asset_id:1>"`），
 并多带 `query_image: { "resized": "1632x1088", "vision_tokens": 1734 }`。
@@ -365,7 +339,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 | `POST /api/maintenance/vector/export` | 全量导出 JSONL。body `{"path":"…"}` 可指定路径，默认落在 `data/exports/vectors-<时间戳>.jsonl` |
 | `POST /api/maintenance/vector/import` | 从 JSONL 重建（搬家/灾备）。body `{"path":"…"}` |
 | `POST /api/maintenance/golden/verify` | 跑一次金标校验并落库，返回 `{golden, blocks_jobs}` |
-| `POST /api/maintenance/encoder/refresh` | 重新探测侧车 `/health`，返回最新 `EncoderInfo` |
+| `POST /api/maintenance/encoder/refresh` | 返回当前编码器状态（进程内 candle，无远端可探） |
 
 ---
 
@@ -422,7 +396,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 | **搜索** | `/search` | `GET /api/search/text`、`POST /api/search/image`、`GET /api/search/lexical`、`GET /api/prompts/{id}/similar` |
 | **作业** | `/jobs` | `GET /api/jobs`、`GET /api/jobs/{id}`、`POST /api/jobs/import`、`POST /api/jobs/encode`、`pause/resume/cancel`、`GET /api/jobs/{id}/errors` |
 | **统计** | `/stats` | `GET /api/stats`、`GET /api/stats/facets`、`GET /api/stats/size` |
-| 全局页头 | 所有页 | `GET /api/health`（状态徽标、指纹、`encoder.mode=mock` 时显示醒目提示） |
+| 全局页头 | 所有页 | `GET /api/health`（状态徽标、指纹、`encoder.mock=true` 时显示 mock 标记） |
 
 前端硬性要求：
 
@@ -443,10 +417,10 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 | §13 | 本项目（Rust 主服务 + 前端）如何证明 |
 | --- | --- |
 | 1 | `/api/health` 返回 `READY`，带 `encoder.fingerprint` 与 `model_dir` |
-| 2 | `golden` 字段按 §9.3 三档阈值展示；侧车无 `/v1/verify` 时显示 `unsupported` 并说明原因 |
-| 3 | 同图喂侧车与主服务，余弦 1.000000（需真实侧车，本项目只保证**调用路径与指纹校验**正确） |
+| 2 | `golden` 字段展示 `unsupported` 并说明「当前后端没有历史基线」 |
+| 3 | 同一张图连续编码两次，余弦 1.000000（模型推理确定性）；缺模型时退化为词法而不报错 |
 | 4 | 指纹不一致时 `POST /api/assets/{id}/prompts` 等写入返回 `409 FINGERPRINT_MISMATCH` |
-| 5 | 超大图 413 透出为 `PAYLOAD_TOO_LARGE` + `detail.plan` |
+| 5 | 超过 `--max-media-bytes` 的图返回 413 `PAYLOAD_TOO_LARGE` |
 | 6 | `pause` 后 `resume` 不重复编码（`cursor` + `asset_vector.fingerprint` 双重判定） |
 | 7 | `DELETE /api/assets/{id}` 后稠密/稀疏两路都不再返回该点 |
 | 8 | 重启后 `/api/health` 正常、数据可查、指纹不变 |
