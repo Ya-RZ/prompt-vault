@@ -60,7 +60,7 @@ function goldenTooltip(golden: GoldenInfo): string {
 /** 页头右侧的健康徽标：状态、编码指纹短码、侧车设备、金标状态 */
 export function HealthIndicator({ health, error, loading, onRefresh }: HealthIndicatorProps) {
   const refreshButton = (
-    <Tooltip title="重新拉取 /api/health">
+    <Tooltip title="重新拉取健康状态">
       <Button
         size="small"
         type="text"
@@ -83,7 +83,7 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
             presentation
               ? presentation.description
               : loading
-                ? '正在请求 /api/health…'
+                ? '正在请求健康状态…'
                 : '已收到响应但没有可用的健康数据，请检查主服务版本是否与 INTERFACES.md 一致。'
           }
         >
@@ -105,7 +105,7 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
         title={
           ready
             ? '主服务与编码侧车均正常。'
-            : '服务降级：侧车不可达、金标失败或索引指纹不一致，详见 /api/health。'
+            : '服务降级：编码不可用、金标失败或索引指纹不一致，请查看健康状态详情。'
         }
       >
         <span>

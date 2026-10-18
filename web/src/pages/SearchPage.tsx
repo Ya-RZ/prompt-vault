@@ -359,8 +359,7 @@ export function SearchPage() {
               <p style={{ margin: '6px 0 0' }}>点击或把图片拖到这里，进行以图搜图</p>
               <p style={{ margin: 0 }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  POST /api/search/image（multipart/form-data，字段名 file）
-                  {imageName ? ` · 上次查询：${imageName}` : ''}
+                  {imageName ? `上次查询：${imageName}` : '支持 JPG / PNG / WebP'}
                 </Text>
               </p>
             </Upload.Dragger>
@@ -446,7 +445,7 @@ export function SearchPage() {
         items={[
           {
             key: 'lexical',
-            label: '词法检索调试（GET /api/search/lexical）',
+            label: '词法检索调试',
             children: (
               <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                 <Space size={8}>

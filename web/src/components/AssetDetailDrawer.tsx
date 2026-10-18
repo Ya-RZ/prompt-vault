@@ -402,7 +402,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
           查找相似资产（k=12, dense）
         </Button>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          走 GET /api/assets/&#123;id&#125;/similar
+          基于向量相似度
         </Text>
       </Space>
       {similarError ? <ErrorState error={similarError} context="相似资产查询失败" /> : null}

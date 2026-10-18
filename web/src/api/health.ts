@@ -31,7 +31,7 @@ export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse>
     throw new ApiError(
       200,
       'INTERNAL',
-      '/api/health 响应结构不符合 INTERFACES.md §3（缺少 status/encoder/golden/index/db 字段）',
+      '健康检查响应结构异常（缺少必需字段），可能是主服务版本不匹配',
       data,
     );
   }

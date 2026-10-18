@@ -518,7 +518,7 @@ export function JobsPage() {
       {/* 新建导入作业 */}
       <Modal
         open={importOpen}
-        title="新建导入作业（POST /api/jobs/import）"
+        title="新建导入作业"
         onCancel={() => setImportOpen(false)}
         onOk={() => importForm.submit()}
         confirmLoading={submitting}
@@ -567,7 +567,7 @@ export function JobsPage() {
       {/* 新建编码作业 */}
       <Modal
         open={encodeOpen}
-        title="新建编码作业（POST /api/jobs/encode）"
+        title="新建编码作业"
         onCancel={() => setEncodeOpen(false)}
         onOk={() => encodeForm.submit()}
         confirmLoading={submitting}

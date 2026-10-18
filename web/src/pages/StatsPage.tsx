@@ -133,9 +133,7 @@ export function StatsPage() {
           <Button icon={<ReloadOutlined />} onClick={reloadAll} loading={statsLoading || sizeLoading}>
             刷新
           </Button>
-          <Text type="secondary">
-            数据来自 GET /api/stats · GET /api/stats/facets · GET /api/stats/size
-          </Text>
+          <Text type="secondary">数据来自主服务的统计接口</Text>
         </Space>
       </Card>
 
@@ -238,7 +236,7 @@ export function StatsPage() {
               </Card>
             </Col>
             <Col xs={24} lg={6}>
-              <Card size="small" variant="outlined" title="磁盘占用（/api/stats/size）">
+              <Card size="small" variant="outlined" title="磁盘占用">
                 {sizeError ? (
                   <ErrorState error={sizeError} context="体积统计加载失败" onRetry={reloadSize} />
                 ) : sizeLoading && !size ? (
@@ -288,7 +286,7 @@ export function StatsPage() {
           <Card
             size="small"
             variant="outlined"
-            title="Facet 查询（GET /api/stats/facets）"
+            title="分布统计"
             extra={
               <Space size={8}>
                 <Segmented
