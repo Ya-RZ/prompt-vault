@@ -83,7 +83,13 @@ pub async fn create_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
         recursive: body.recursive.unwrap_or(defaults.recursive),
         extensions: body.extensions.unwrap_or(defaults.extensions),
         default_prompt_role: body.default_prompt_role.unwrap_or(defaults.default_prompt_role),
-        dedupe_by: body.dedupe_by.unwrap_or(defaults.dedupe_by),
+        // 去重算法固定 blake3，这个字段只是开关：
+        // `none` = 不去重；其余值（含旧客户端传来的 sha256 / rel_path）一律归一为 blake3，
+        // 避免数据库与界面上再出现已废弃的算法名。
+        dedupe_by: match body.dedupe_by.as_deref().map(|v| v.trim().to_ascii_lowercase()) {
+            Some(v) if v == "none" => "none".to_string(),
+            _ => crate::jobs::HASH_ALGO.to_string(),
+        },
     };
     // 导入前金标闸门（§9.4）
     state.check_golden_gate()?;
