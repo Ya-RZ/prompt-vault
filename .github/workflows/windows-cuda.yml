@@ -40,6 +40,9 @@ jobs:
     #   #error: -- unsupported Microsoft Visual Studio version!
     # windows-2022 带的是 VS 2022(17.x)，在支持范围内。
     runs-on: windows-2022
+    # 用 gh release 传附件需要写权限
+    permissions:
+      contents: write
     env:
       # 目标卡的算力：RTX 4060 是 Ada = sm_89；30 系 Ampere 用 86；20 系 Turing 用 75。
       # 不设的话 candle 的构建脚本会 fallback 去调 nvidia-smi，在无卡 runner 上直接 panic。
@@ -161,20 +164,20 @@ jobs:
           Get-Content dist\SHA256SUMS
           Get-Item dist\prompt-vault-windows-x86_64-cuda.exe | Select-Object Name, Length
 
-      - name: 打包免安装版（exe + CUDA runtime DLL）
-        # nvcuda.dll 不打包：它是显卡驱动的一部分，随驱动安装，不能分发。
-        # 其余 CUDA runtime DLL 按通配符整包带上，避免因版本号变化漏文件。
+      - name: 打包（完整包 + 精简包）
+        # 完整包：exe + 全部 CUDA runtime DLL + MSVC 运行时（免安装）
+        # 精简包：只含 exe，面向已装 CUDA 13.2 的机器
+        # nvcuda.dll 两边都不打：它是显卡驱动的一部分，不能分发。
         run: |
-          $dist = "dist/portable"
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item target\release\prompt-vault.exe $dist\
+          $exe = "target\release\prompt-vault.exe"
+          if (-Not (Test-Path $exe)) { throw "exe 不存在" }
 
-          # CUDA 13 的 Windows 安装布局和 12.x 不一样（不一定都在 bin\），
-          # 所以递归找，并且同一文件名优先取 bin\ 下的那份。
+          # ---------- 完整包 ----------
+          $full = "dist/full"
+          New-Item -ItemType Directory -Force -Path $full | Out-Null
+          Copy-Item $exe $full\
+
           Write-Output "CUDA_PATH=$env:CUDA_PATH"
-          Write-Output "=== CUDA 根目录结构 ==="
-          Get-ChildItem $env:CUDA_PATH -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-
           $wanted = @{}
           foreach ($d in (Get-ChildItem $env:CUDA_PATH -Recurse -Filter *.dll -ErrorAction SilentlyContinue)) {
             if ($d.Name -notmatch '^(cublas|cublasLt|cudart|curand|nvrtc)') { continue }
@@ -183,50 +186,73 @@ jobs:
               $wanted[$d.Name] = $d
             }
           }
-          Write-Output "=== 找到的 CUDA runtime DLL ==="
-          if ($wanted.Count -eq 0) { throw "没有在 CUDA_PATH 下找到任何 cublas/cudart/curand/nvrtc DLL" }
+          if ($wanted.Count -eq 0) { throw "没找到任何 CUDA runtime DLL" }
           foreach ($k in ($wanted.Keys | Sort-Object)) {
-            $f = $wanted[$k]
-            Write-Output ("  {0}  {1:N1} MB  <- {2}" -f $f.Name, ($f.Length / 1MB), $f.DirectoryName)
-            Copy-Item $f.FullName $dist\
+            Copy-Item $wanted[$k].FullName $full\
+            Write-Output ("  + {0}  {1:N1} MB" -f $wanted[$k].Name, ($wanted[$k].Length / 1MB))
           }
-
-          # MSVC 运行时（目标机没装 VC++ Redist 时需要）
-          $vcRun = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
-          foreach ($v in $vcRun) {
+          foreach ($v in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
             $hit = Get-ChildItem "C:\Windows\System32" -Filter $v -ErrorAction SilentlyContinue
-            if ($hit) { Copy-Item $hit.FullName $dist\ }
+            if ($hit) { Copy-Item $hit.FullName $full\ }
+          }
+          @"
+          prompt-vault (Windows x86_64, CUDA 13.2) — 完整免安装版
+
+          运行：直接执行 prompt-vault.exe
+          前置：机器需要 NVIDIA 显卡驱动（提供 nvcuda.dll），无需安装 CUDA Toolkit。
+          本目录已含 CUDA runtime（cublas / cublasLt / cudart / curand / nvrtc）。
+
+          编码模型需单独准备，用 --model-dir 指向 Qwen3-VL-Embedding-2B 目录：
+            prompt-vault.exe --encoder candle --model-dir <模型目录>
+          "@ | Out-File -Encoding utf8 $full\README.txt
+
+          Compress-Archive -Path "$full\*" -DestinationPath "dist/prompt-vault-windows-cuda-full.zip" -CompressionLevel Optimal -Force
+          $fullMB = [math]::Round(((Get-Item "dist/prompt-vault-windows-cuda-full.zip").Length / 1MB), 1)
+          Write-Output "=== 完整包: $fullMB MB ==="
+
+          # ---------- 精简包 ----------
+          $lite = "dist/lite"
+          New-Item -ItemType Directory -Force -Path $lite | Out-Null
+          Copy-Item $exe $lite\
+          @"
+          prompt-vault (Windows x86_64, CUDA 13.2) — 精简版
+
+          本包只含 exe。运行前需要：
+            1) NVIDIA 显卡驱动（nvcuda.dll）
+            2) CUDA 13.2 的 cublas64_13 / cublasLt64_13 / curand64_10 / nvrtc*
+               （装 CUDA Toolkit 13.2 即可，或从完整包拷 DLL 出来）
+
+          不想装 CUDA Toolkit 就下载完整包（full）。
+
+          编码模型需单独准备：
+            prompt-vault.exe --encoder candle --model-dir <模型目录>
+          "@ | Out-File -Encoding utf8 $lite\README.txt
+
+          Compress-Archive -Path "$lite\*" -DestinationPath "dist/prompt-vault-windows-cuda-lite.zip" -CompressionLevel Optimal -Force
+          $liteMB = [math]::Round(((Get-Item "dist/prompt-vault-windows-cuda-lite.zip").Length / 1MB), 1)
+          Write-Output "=== 精简包: $liteMB MB ==="
+
+          (Get-FileHash "dist/prompt-vault-windows-cuda-full.zip" -Algorithm SHA256).Hash + "  prompt-vault-windows-cuda-full.zip" | Out-File -Encoding ascii "dist/SHA256SUMS"
+          (Get-FileHash "dist/prompt-vault-windows-cuda-lite.zip" -Algorithm SHA256).Hash + "  prompt-vault-windows-cuda-lite.zip" | Out-File -Encoding ascii -Append "dist/SHA256SUMS"
+          Get-Content "dist/SHA256SUMS"
+
+      - name: 发布到 Release
+        # 用 gh CLI 而不是 upload-artifact：Release 附件不占 artifact 存储配额
+        # （Free 计划仅 500 MB，完整包单个就 ~481 MB）。
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "latest"
+          $repo = $env:GITHUB_REPOSITORY
+
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "创建 release: $tag"
+            gh release create $tag --repo $repo --prerelease --title "Latest Windows CUDA build" --notes "自动化构建 commit $env:GITHUB_SHA"
           }
 
-          # 说明文件
-          @"
-          prompt-vault (Windows x86_64, CUDA)
+          Write-Output "上传附件..."
+          gh release upload $tag dist/prompt-vault-windows-cuda-full.zip dist/prompt-vault-windows-cuda-lite.zip dist/SHA256SUMS --clobber --repo $repo
 
-          直接运行：prompt-vault.exe
-          前置条件：机器需要安装 NVIDIA 显卡驱动（提供 nvcuda.dll），无需安装 CUDA Toolkit。
-
-          本目录已内含 CUDA runtime：cublas / cudart / curand / nvrtc。
-          编码模型需要单独准备，用 --model-dir 指向 Qwen3-VL-Embedding-2B 目录：
-            prompt-vault.exe --encoder candle --model-dir <模型目录>
-          "@ | Out-File -Encoding utf8 $dist\README.txt
-
-          $totalMB = [math]::Round(((Get-ChildItem $dist -File | Measure-Object Length -Sum).Sum / 1MB), 1)
-          Write-Output "=== portable 总大小: $totalMB MB ==="
-          Get-ChildItem $dist -File | Sort-Object Length -Descending | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
-
-          Compress-Archive -Path "$dist\*" -DestinationPath "dist/prompt-vault-windows-cuda-portable.zip" -CompressionLevel Optimal -Force
-          $zipMB = [math]::Round(((Get-Item "dist/prompt-vault-windows-cuda-portable.zip").Length / 1MB), 1)
-          Write-Output "=== zip 大小: $zipMB MB ==="
-          (Get-FileHash "dist/prompt-vault-windows-cuda-portable.zip" -Algorithm SHA256).Hash |
-            Out-File -Encoding ascii "dist/portable-SHA256SUMS"
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v7
-        with:
-          name: prompt-vault-windows-x86_64-cuda
-          path: |
-            dist/prompt-vault-windows-x86_64-cuda.exe
-            dist/SHA256SUMS
-            dist/prompt-vault-windows-cuda-portable.zip
-            dist/portable-SHA256SUMS
-          if-no-files-found: error
+          Write-Output "=== release 附件 ==="
+          gh release view $tag --repo $repo
