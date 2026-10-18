@@ -26,7 +26,7 @@ pub struct ImportParams {
     pub extensions: Vec<String>,
     pub default_prompt_role: String,
     /// 去重开关：`none` 关闭 hash 去重；其余值（兼容旧请求里的 `sha256` / `rel_path`）一律按 blake3 去重。
-    /// 注意指纹无论如何都会算 —— 归档目标路径 `<hash 前两位>/<bucket>/` 依赖它。
+    /// 注意指纹无论如何都会算 —— 归档目标路径 `<hash 前两位>/` 依赖它。
     pub dedupe_by: String,
 }
 
@@ -292,7 +292,7 @@ fn import_one(
 
     let raw_name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let file_name = sanitize_file_name(&raw_name);
-    let rel = match pick_target_rel(state, &hash, &kind, &file_name)? {
+    let rel = match pick_target_rel(state, &hash, &file_name)? {
         TargetChoice::New(rel) => rel,
         // 目标路径上已经是同一份内容（同 hash）→ 去重跳过
         TargetChoice::Existing(_) => return Ok(ImportOutcome::Skipped),
@@ -345,18 +345,12 @@ pub fn blake3_file(path: &std::path::Path) -> ApiResult<String> {
 }
 
 /// 目标分桶目录名：`media/<hash 前两位>/{image|video|other}/<文件名>`。
-pub fn bucket_of(kind: &str) -> &'static str {
-    match kind {
-        "image" => "image",
-        "video" => "video",
-        _ => "other",
-    }
-}
-
-/// 分桶后的相对路径（相对 media 根，统一用 `/`）。
-pub fn target_rel_path(hash: &str, kind: &str, file_name: &str) -> String {
+/// 归档相对路径（相对 media 根，统一用 `/`）：`<hash 前两位>/<文件名>`。
+///
+/// 不再按 image/video/other 分子目录 —— 类型仍然判定并写进 `asset.kind`，只是不参与路径。
+pub fn target_rel_path(hash: &str, file_name: &str) -> String {
     let prefix = hash.get(..2).unwrap_or("00");
-    format!("{prefix}/{}/{}", bucket_of(kind), file_name)
+    format!("{prefix}/{file_name}")
 }
 
 /// 按扩展名 + 能否读出尺寸判定 kind；图片读不出尺寸的归到 `other`。
@@ -449,12 +443,11 @@ pub enum TargetChoice {
 pub fn pick_target_rel(
     state: &AppState,
     hash: &str,
-    kind: &str,
     file_name: &str,
 ) -> ApiResult<TargetChoice> {
     let candidates = [
-        target_rel_path(hash, kind, file_name),
-        target_rel_path(hash, kind, &format!("{}-{file_name}", hash.get(..8).unwrap_or(hash))),
+        target_rel_path(hash, file_name),
+        target_rel_path(hash, &format!("{}-{file_name}", hash.get(..8).unwrap_or(hash))),
     ];
     for rel in candidates {
         let abs = state.cfg.media_path(&rel);

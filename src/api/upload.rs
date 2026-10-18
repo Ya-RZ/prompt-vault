@@ -61,7 +61,7 @@ pub async fn upload_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
     // 所以尺寸探测能直接对着临时文件做。
     let (kind, width, height) = probe_kind(&temp_path);
 
-    let rel = match pick_target_rel(state.as_ref(), &hash, &kind, &file_name)? {
+    let rel = match pick_target_rel(state.as_ref(), &hash, &file_name)? {
         TargetChoice::New(rel) => {
             move_file(&temp_path, &state.cfg.media_path(&rel))?;
             rel

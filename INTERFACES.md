@@ -234,7 +234,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 
 ### `POST /api/assets/upload`
 
-`multipart/form-data`，字段名 `file`。落盘 → 按 `<media>/<hash 前两位>/<image|video|other>/` 归档 → 建资产（未编码）→ 返回 `201` + `AssetDto`。
+`multipart/form-data`，字段名 `file`。落盘 → 按 `<media>/<hash 前两位>/` 归档 → 建资产（未编码）→ 返回 `201` + `AssetDto`。
 
 - 大小上限由 `--max-media-bytes` 控制（默认 256 MB），超限 → `413 PAYLOAD_TOO_LARGE`
 - 同一 blake3 hash 已存在 → 直接返回已有资产（不重复落盘）
@@ -414,7 +414,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 | --- | --- |
 | `root` | 请求里可传绝对或相对路径（相对路径以**可执行文件所在目录**为基准）；**落库时换算成相对路径**，跨盘无法换算则存空并在 `warnings` 提示；响应里的 `root` 是现场拼回的绝对路径 |
 | `extensions` | 小写、不带点；**空数组 = 不过滤**，任意类型都可导入（落 `other` 桶） |
-| 归档 | 原始文件被**移动**到 `<media>/<hash 前两位>/{image|video|other}/<文件名>` |
+| 归档 | 原始文件被**移动**到 `<media>/<hash 前两位>/<文件名>`（不再按类型分子目录；类型只写进 `asset.kind`） |
 | 哈希 | blake3；文件 > 100 MB 时**只取前 100 MB** 计算 |
 | 去重 | 同一 hash 已存在 → 跳过，源文件留在原位；同名不同内容 → 加 `<hash8>-` 前缀，不覆盖 |
 | 自跳过 | 源文件已在 media 目录（或其子目录）内 → 跳过，避免自己搬自己 |
