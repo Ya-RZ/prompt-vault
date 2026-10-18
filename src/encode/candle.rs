@@ -301,6 +301,24 @@ pub struct CandleOptions {
 impl CandleEncoder {
     pub fn new(model_dir: impl Into<PathBuf>, opts: CandleOptions) -> Self {
         let (device, device_label, device_name) = resolve_device(opts.device);
+        // 显存偏小时提示：像素上限过高会让显存贴顶，candle 的分配器会陷入
+        // 「清缓存 → 重试 → 同步」，单张耗时能从 1.5s 掉到 20s+（实测 4060 Laptop 8GB）。
+        if let Some(ordinal) = device_label
+            .strip_prefix("cuda:")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            if let Some(info) = cuda_inventory().into_iter().find(|d| d.ordinal == ordinal) {
+                let vram_gib = info.total_mem_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                if opts.max_pixels > 1_048_576 && vram_gib < 12.0 {
+                    tracing::warn!(
+                        vram_gb = format!("{vram_gib:.1}"),
+                        max_pixels = opts.max_pixels,
+                        "显存偏小：当前像素上限可能让显存贴顶，编码速度会下降 10 倍以上；\
+                         建议 --max-pixels 786432（8GB 级显卡的实测甜点）"
+                    );
+                }
+            }
+        }
         Self {
             model_dir: model_dir.into(),
             cache_dir: opts.cache_dir,
@@ -675,6 +693,14 @@ impl CandleEncoder {
                     })?;
                 let encode_ms = t_enc.elapsed().as_millis() as u64;
                 tracing::info!(index = i, encode_ms, "单张图片推理耗时");
+                if encode_ms > 10_000 && !SLOW_ENCODE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        encode_ms,
+                        max_pixels = self.max_pixels,
+                        "单张编码超过 10 秒：显存可能贴顶（或已回退到共享内存）；\
+                         建议降低 --max-pixels（8GB 卡用 786432）"
+                    );
+                }
                 let vector = vectors
                     .into_iter()
                     .next()
@@ -872,6 +898,9 @@ pub fn warn_if_max_pixels_overridden(model_dir: &Path, max_pixels: u64) {
         );
     }
 }
+
+/// 慢编码警告只打一次，避免整批作业刷屏。
+static SLOW_ENCODE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 金标基线文件名（放在 HF 缓存目录里，与模型缓存同生命周期）。
 const GOLDEN_BASELINE_FILE: &str = "golden-baseline.json";
