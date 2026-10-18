@@ -1,3 +1,4 @@
+import { DownloadOutlined } from '@ant-design/icons';
 import {
   App as AntdApp,
   Button,
@@ -6,6 +7,7 @@ import {
   Drawer,
   Empty,
   Input,
+  Modal,
   Popconfirm,
   Select,
   Space,
@@ -36,6 +38,34 @@ import { tagColor } from '../utils/tagColor';
 
 const { Text, Paragraph } = Typography;
 
+/** 下载所需的最小字段：完整 Asset 与搜索结果的 SearchAssetRef 都有。 */
+interface Downloadable {
+  id: number;
+  rel_path: string;
+  media_url: string;
+}
+
+/** 下载原图：用 <a download> 指向后端直出的 media_url（同源，无需额外接口）。 */
+function downloadName(asset: Downloadable): string {
+  const base = asset.rel_path.split('/').pop() ?? `asset-${asset.id}`;
+  return base || `asset-${asset.id}`;
+}
+
+function DownloadButton({ asset, size }: { asset: Downloadable; size?: 'small' | 'middle' }) {
+  return (
+    <Button
+      size={size}
+      icon={<DownloadOutlined />}
+      href={asset.media_url}
+      download={downloadName(asset)}
+      target="_blank"
+      rel="noreferrer"
+    >
+      下载
+    </Button>
+  );
+}
+
 export interface AssetDetailDrawerProps {
   assetId: number | null;
   open: boolean;
@@ -47,28 +77,67 @@ export interface AssetDetailDrawerProps {
 /** 相似资产结果（结构同 /api/search/image 的 items） */
 function SimilarGrid({ items }: { items: SearchHit[] }) {
   const [revealed, setRevealed] = useState<number[]>([]);
+  const [preview, setPreview] = useState<SearchHit['asset'] | null>(null);
 
   if (items.length === 0) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有相似资产" />;
   }
 
   return (
-    <div className="pv-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
-      {items.map((hit) => (
-        <div key={`${hit.asset.id}-${hit.matched?.prompt_id ?? 'x'}`}>
-          <CoverImage
-            src={hit.asset.thumb_url}
-            alt={hit.asset.rel_path}
-            blurred={Boolean(hit.asset.nsfw) && !revealed.includes(hit.asset.id)}
-            onReveal={() => setRevealed((prev) => [...prev, hit.asset.id])}
-          />
-          <div className="pv-meta-line" style={{ marginTop: 4 }} title={hit.asset.rel_path}>
-            {hit.asset.rel_path}
+    <>
+      <div className="pv-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+        {items.map((hit) => {
+          const blurred = Boolean(hit.asset.nsfw) && !revealed.includes(hit.asset.id);
+          return (
+            <div key={`${hit.asset.id}-${hit.matched?.prompt_id ?? 'x'}`}>
+              <div
+                onClick={() => {
+                  // 模糊态点一下只解除模糊；再点才打开大图
+                  if (blurred) return;
+                  setPreview(hit.asset);
+                }}
+                style={{ cursor: blurred ? 'default' : 'zoom-in' }}
+              >
+                <CoverImage
+                  src={hit.asset.thumb_url}
+                  alt={hit.asset.rel_path}
+                  blurred={blurred}
+                  onReveal={() => setRevealed((prev) => [...prev, hit.asset.id])}
+                />
+              </div>
+              <div className="pv-meta-line" style={{ marginTop: 4 }} title={hit.asset.rel_path}>
+                {hit.asset.rel_path.split('/').pop()}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                <span className="pv-meta-line">score {hit.score?.toFixed(4) ?? '—'}</span>
+                <DownloadButton asset={hit.asset} size="small" />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <Modal
+        open={preview !== null}
+        onCancel={() => setPreview(null)}
+        footer={null}
+        width={880}
+        title={preview ? preview.rel_path.split('/').pop() : ''}
+      >
+        {preview ? (
+          <div style={{ textAlign: 'center' }}>
+            <img
+              src={preview.media_url}
+              alt={preview.rel_path}
+              style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain', marginBottom: 12 }}
+            />
+            <div>
+              <DownloadButton asset={preview} />
+            </div>
           </div>
-          <div className="pv-meta-line">score {hit.score?.toFixed(4) ?? '—'}</div>
-        </div>
-      ))}
-    </div>
+        ) : null}
+      </Modal>
+    </>
   );
 }
 
@@ -223,12 +292,33 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
 
   const overview = asset ? (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      <div style={{ maxWidth: 360 }}>
-        <CoverImage
+      {/* 主图：居中放大、等比不裁剪；NSFW 未揭示时模糊，点一下解除 */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          background: '#fafafa',
+          border: '1px solid #f0f0f0',
+          borderRadius: 8,
+          padding: 8,
+        }}
+      >
+        <img
           src={asset.media_url}
-          alt={asset.rel_path}
-          blurred={blurred}
-          onReveal={() => setRevealed(true)}
+          alt={asset.title ?? asset.rel_path}
+          onClick={() => {
+            if (blurred) setRevealed(true);
+          }}
+          style={{
+            maxWidth: '100%',
+            maxHeight: '62vh',
+            objectFit: 'contain',
+            display: 'block',
+            filter: blurred ? 'blur(18px)' : undefined,
+            transform: blurred ? 'scale(1.02)' : undefined,
+            cursor: blurred ? 'pointer' : 'default',
+          }}
         />
       </div>
 
@@ -333,6 +423,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
         <Button type="primary" loading={saving} onClick={handleSaveMeta}>
           保存元数据
         </Button>
+        <DownloadButton asset={asset} />
         <Popconfirm
           title="删除该资产？"
           description="将同时删除提示词、向量点与媒体文件。"
@@ -347,10 +438,6 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
         </Popconfirm>
       </Space>
 
-      <Divider style={{ margin: '4px 0' }} />
-      <Text type="secondary" style={{ fontSize: 12 }}>
-        媒体地址（后端直出，前端不拼接）：{asset.media_url}
-      </Text>
     </Space>
   ) : null;
 
