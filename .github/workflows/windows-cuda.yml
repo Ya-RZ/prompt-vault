@@ -169,13 +169,27 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item target\release\prompt-vault.exe $dist\
 
-          $cudaBin = Join-Path $env:CUDA_PATH "bin"
-          Write-Output "=== CUDA\bin 中 cublas/cudart/curand/nvrtc 相关 DLL ==="
-          $candidates = Get-ChildItem $cudaBin -Filter *.dll |
-            Where-Object { $_.Name -match '^(cublas|cublasLt|cudart|curand|nvrtc)' } |
-            Sort-Object Name
-          $candidates | ForEach-Object { Write-Output ("  {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)) }
-          $candidates | ForEach-Object { Copy-Item $_.FullName $dist\ }
+          # CUDA 13 的 Windows 安装布局和 12.x 不一样（不一定都在 bin\），
+          # 所以递归找，并且同一文件名优先取 bin\ 下的那份。
+          Write-Output "CUDA_PATH=$env:CUDA_PATH"
+          Write-Output "=== CUDA 根目录结构 ==="
+          Get-ChildItem $env:CUDA_PATH -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+
+          $wanted = @{}
+          foreach ($d in (Get-ChildItem $env:CUDA_PATH -Recurse -Filter *.dll -ErrorAction SilentlyContinue)) {
+            if ($d.Name -notmatch '^(cublas|cublasLt|cudart|curand|nvrtc)') { continue }
+            $prev = $wanted[$d.Name]
+            if (-not $prev -or ($d.DirectoryName -match '\\bin' -and $prev.DirectoryName -notmatch '\\bin')) {
+              $wanted[$d.Name] = $d
+            }
+          }
+          Write-Output "=== 找到的 CUDA runtime DLL ==="
+          if ($wanted.Count -eq 0) { throw "没有在 CUDA_PATH 下找到任何 cublas/cudart/curand/nvrtc DLL" }
+          foreach ($k in ($wanted.Keys | Sort-Object)) {
+            $f = $wanted[$k]
+            Write-Output ("  {0}  {1:N1} MB  <- {2}" -f $f.Name, ($f.Length / 1MB), $f.DirectoryName)
+            Copy-Item $f.FullName $dist\
+          }
 
           # MSVC 运行时（目标机没装 VC++ Redist 时需要）
           $vcRun = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
