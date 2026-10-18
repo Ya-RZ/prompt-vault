@@ -31,6 +31,10 @@ pub struct Config {
     pub model_dir: Option<PathBuf>,
     /// candle 权重精度（f32 / f16 / bf16）
     pub candle_dtype: String,
+    /// candle 计算设备：auto（有 CUDA 就用）/ cpu / cuda:N
+    pub candle_device: String,
+    /// candle 的 HuggingFace 缓存根目录（HF_HOME）；不再写进模型目录
+    pub hf_cache_dir: PathBuf,
     /// 序列长度上限（与侧车口径一致：8192）
     pub max_length: usize,
     /// web/dist 的路径（开发期直接读盘；release 走 rust-embed）
@@ -112,13 +116,18 @@ impl AppState {
                 tracing::info!(
                     model_dir = %dir.display(),
                     dtype = %cfg.candle_dtype,
+                    device = %cfg.candle_device,
+                    hf_cache = %cfg.hf_cache_dir.display(),
                     max_length = cfg.max_length,
                     "candle 后端已配置（权重将在首次编码时加载）"
                 );
                 Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
                     dir,
+                    cfg.hf_cache_dir.clone(),
                     cfg.max_length,
                     dtype,
+                    crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
+                    cfg.max_media_bytes,
                 )))
             }
             _ => None,

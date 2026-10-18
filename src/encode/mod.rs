@@ -22,7 +22,7 @@ use crate::types::{
 
 pub mod candle;
 
-pub use candle::{CandleEncoder, MAX_PIXELS};
+pub use candle::{CandleEncoder, DeviceSpec, MAX_PIXELS};
 
 pub const MOCK_FINGERPRINT: &str = "mock|dim=2048|v1|device=cpu";
 
@@ -286,7 +286,12 @@ impl EncoderClient {
                 cos_image: None,
                 threshold: None,
                 device_mismatch: false,
-                encoded_device: Some("cpu".into()),
+                encoded_device: Some(
+                    self.candle
+                        .as_ref()
+                        .map(|c| c.device_label().to_string())
+                        .unwrap_or_else(|| "cpu".to_string()),
+                ),
             };
         }
         if self.mode == EncoderMode::Mock {
@@ -299,7 +304,12 @@ impl EncoderClient {
                 cos_image: None,
                 threshold: None,
                 device_mismatch: false,
-                encoded_device: Some("cpu".into()),
+                encoded_device: Some(
+                    self.candle
+                        .as_ref()
+                        .map(|c| c.device_label().to_string())
+                        .unwrap_or_else(|| "cpu".to_string()),
+                ),
             };
         }
         let url = format!("{}/v1/verify", self.base.trim_end_matches('/'));
@@ -524,7 +534,13 @@ pub fn health_snapshot(
             .as_ref()
             .and_then(|h| h.device.clone())
             .or_else(|| match mode {
-                EncoderMode::Mock | EncoderMode::Candle => Some("cpu".to_string()),
+                EncoderMode::Mock => Some("cpu".to_string()),
+                EncoderMode::Candle => Some(
+                    candle
+                        .as_ref()
+                        .map(|c| c.device_label().to_string())
+                        .unwrap_or_else(|| "cpu".to_string()),
+                ),
                 EncoderMode::Live => None,
             }),
         dim: Some(dim),

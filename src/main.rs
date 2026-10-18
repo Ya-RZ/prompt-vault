@@ -44,6 +44,12 @@ struct Args {
     /// candle 权重精度：f32（默认，最稳）/ f16 / bf16
     #[arg(long, env = "PV_CANDLE_DTYPE", default_value = "f32")]
     candle_dtype: String,
+    /// candle 计算设备：auto（默认，二进制带 cuda 且驱动可用时用 GPU，否则回落 CPU）/ cpu / cuda:0
+    #[arg(long, env = "PV_CANDLE_DEVICE", default_value = "auto")]
+    candle_device: String,
+    /// candle 的 HuggingFace 缓存目录（默认 <data-dir>/hf-cache）
+    #[arg(long, env = "PV_HF_CACHE_DIR")]
+    hf_cache_dir: Option<PathBuf>,
     /// candle 的序列长度上限（与侧车一致：8192）
     #[arg(long, env = "PV_MAX_LENGTH", default_value_t = 8192)]
     max_length: usize,
@@ -101,6 +107,11 @@ async fn main() {
         encoder_mode: EncoderMode::parse(&args.encoder),
         model_dir: args.model_dir.clone(),
         candle_dtype: args.candle_dtype.clone(),
+        candle_device: args.candle_device.clone(),
+        hf_cache_dir: args
+            .hf_cache_dir
+            .clone()
+            .unwrap_or_else(|| args.data_dir.join("hf-cache")),
         max_length: args.max_length,
         web_dir: args.web_dir.clone(),
         max_media_bytes: args.max_media_bytes,

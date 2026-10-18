@@ -379,7 +379,11 @@ impl VectorStore {
         self.run_query(ScoringQuery::Vector(QueryEnum::Nearest(named)), limit, filter, rescore, oversampling)
     }
 
-    /// 稀疏查询（BM25）：只有侧车给了 sparse 才有意义。
+    /// 稀疏查询（BM25）。
+    ///
+    /// 现状：现有两个编码后端都不产出稀疏向量（candle 只给稠密，Python 侧车也不返回 sparse），
+    /// 所以这条路径在正常检索里走不到 —— 保留它是为了 import/导出与将来接入 BM25 时不必重建 shard。
+    /// 上层（`search`）会按 `sparse_enabled` 与实际是否拿到稀疏向量决定要不要调。
     pub fn search_sparse(
         &self,
         using: &str,
@@ -390,7 +394,7 @@ impl VectorStore {
     ) -> ApiResult<Vec<(i64, f32, Value)>> {
         if !self.sparse_enabled {
             return Err(ApiError::sparse_unavailable(
-                "本索引未启用稀疏向量（侧车未返回 sparse，开发文档 §5.4 改动 2 未实施）",
+                "本索引未启用稀疏向量（建 shard 时 --sparse=false 或该 shard 早于稀疏开关）",
             ));
         }
         let sparse = SparseVector::new(indices.to_vec(), values.to_vec())

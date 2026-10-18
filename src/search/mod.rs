@@ -114,9 +114,22 @@ impl<'a> Engine<'a> {
                     }
                 }
             } else if mode == "hybrid" {
+                // 稀疏路只在「编码器真的产出了 BM25 稀疏向量」时才走。
+                // 现状：candle 后端只给稠密向量，Python 侧车也不返回 sparse，
+                // 所以 hybrid 实际上一直是 dense + lexical —— 这里如实说，别让调用方以为三路都跑了。
                 warnings.push(
-                    "稀疏向量不可用：侧车未返回 sparse（开发文档 §5.4 改动 2 未实施），hybrid 已退化为 dense + lexical"
-                        .to_string(),
+                    match self.state.encoder.mode() {
+                        crate::encode::EncoderMode::Candle => {
+                            "当前 candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"
+                        }
+                        crate::encode::EncoderMode::Mock => {
+                            "MOCK 编码器不产出稀疏向量：hybrid 实际是 dense + lexical"
+                        }
+                        crate::encode::EncoderMode::Live => {
+                            "编码侧车没有返回 sparse 向量：hybrid 实际是 dense + lexical"
+                        }
+                    }
+                    .to_string(),
                 );
                 effective = "dense+lexical".to_string();
             }

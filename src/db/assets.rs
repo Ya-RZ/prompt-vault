@@ -691,19 +691,36 @@ impl Db {
     /// 路径 / 提示词 / 标签三处模糊命中。开发文档 §1：这条路径不需要模型。
     #[allow(clippy::type_complexity)]
     pub fn lexical_search(&self, q: &str, k: usize) -> ApiResult<Vec<(i64, String, String, String, f64)>> {
-        let like = format!("%{}%", q.trim());
+        // 用户输入里的 % 和 _ 是 LIKE 的通配符；不转义的话输入一个 "%" 就能把整库捞出来
+        let like = format!("%{}%", escape_like(q.trim()));
         self.with_conn(|c| {
             let mut stmt = c.prepare(
-                "SELECT a.id, a.rel_path, 'path', a.rel_path, 1.0
-                   FROM asset a WHERE a.rel_path LIKE ?1
-                 UNION ALL
-                 SELECT a.id, a.rel_path, 'prompt', p.text, 0.95
-                   FROM prompt p JOIN asset a ON a.id = p.asset_id WHERE p.text LIKE ?1
-                 UNION ALL
-                 SELECT a.id, a.rel_path, 'tag', t.name, 0.9
-                   FROM asset_tag at JOIN tag t ON t.id = at.tag_id
-                   JOIN asset a ON a.id = at.asset_id WHERE t.name LIKE ?1
-                 LIMIT ?2",
+                // 三路命中先合并，再按 asset 去重（每个 asset 只留分最高的那条），最后排序后 LIMIT。
+                // 没有 ORDER BY 时 SQLite 的返回顺序不确定，而 RRF 是拿返回下标当 rank 算
+                // 1/(k+rank) 的 —— 无序就等于随机加分，同一查询重复执行排名会漂。
+                "WITH hits AS (
+                     SELECT a.id AS aid, a.rel_path AS rel_path, 'path' AS kind,
+                            a.rel_path AS hit, 1.0 AS score
+                       FROM asset a WHERE a.rel_path LIKE ?1 ESCAPE '\\'
+                     UNION ALL
+                     SELECT a.id, a.rel_path, 'prompt', p.text, 0.95
+                       FROM prompt p JOIN asset a ON a.id = p.asset_id
+                      WHERE p.text LIKE ?1 ESCAPE '\\'
+                     UNION ALL
+                     SELECT a.id, a.rel_path, 'tag', t.name, 0.9
+                       FROM asset_tag at JOIN tag t ON t.id = at.tag_id
+                       JOIN asset a ON a.id = at.asset_id
+                      WHERE t.name LIKE ?1 ESCAPE '\\'
+                 ),
+                 ranked AS (
+                     SELECT aid, rel_path, kind, hit, score,
+                            ROW_NUMBER() OVER (PARTITION BY aid ORDER BY score DESC, kind) AS rn
+                       FROM hits
+                 )
+                 SELECT aid, rel_path, kind, hit, score
+                   FROM ranked WHERE rn = 1
+                  ORDER BY score DESC, aid ASC
+                  LIMIT ?2",
             )?;
             let rows = stmt.query_map(params![like, k as i64], |r| {
                 Ok((
@@ -739,4 +756,19 @@ impl Db {
     pub fn asset_must_exist(&self, id: i64) -> ApiResult<AssetRow> {
         self.get_asset(id)?.ok_or_else(|| ApiError::not_found(format!("资产 {id} 不存在")))
     }
+}
+
+/// 转义 LIKE 的模式字符（配合 SQL 里的 `ESCAPE '\'`）。
+fn escape_like(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 8);
+    for ch in raw.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
