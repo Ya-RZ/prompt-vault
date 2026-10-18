@@ -43,6 +43,8 @@ pub struct Config {
     pub max_media_bytes: u64,
     /// 图片宽高比上限（长边/短边）；超限直接拒绝编码（0 表示不检查）
     pub max_aspect_ratio: f64,
+    /// 图片像素安全区上限；超过则先等比缩小（与 max_length 的 token 预算相关）
+    pub max_pixels: u64,
 }
 
 impl Config {
@@ -132,12 +134,15 @@ impl AppState {
                     );
                     Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
                         model_dir,
-                        cfg.hf_cache_dir.clone(),
-                        cfg.max_length,
-                        dtype,
-                        crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
-                        cfg.max_media_bytes,
-                        cfg.max_aspect_ratio,
+                        crate::encode::candle::CandleOptions {
+                            cache_dir: cfg.hf_cache_dir.clone(),
+                            max_length: cfg.max_length,
+                            dtype,
+                            device: crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
+                            max_media_bytes: cfg.max_media_bytes,
+                            max_aspect_ratio: cfg.max_aspect_ratio,
+                            max_pixels: cfg.max_pixels,
+                        },
                     )))
                 }
                 Err(e) => {

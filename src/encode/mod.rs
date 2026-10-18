@@ -192,7 +192,7 @@ pub fn health_snapshot(client: &EncoderClient) -> crate::types::EncoderInfo {
         },
         dim: Some(client.dim() as i64),
         model_dir: candle.as_ref().map(|c| c.model_dir().display().to_string()),
-        max_pixels: candle.as_ref().map(|_| candle::MAX_PIXELS),
+        max_pixels: candle.as_ref().map(|c| c.max_pixels() as i64),
         max_length: candle.as_ref().map(|c| c.max_length() as i64),
         loaded: candle.as_ref().map(|c| c.is_loaded()).unwrap_or(false),
         fingerprint: Some(client.fingerprint_hint()),

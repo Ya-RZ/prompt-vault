@@ -50,11 +50,11 @@
 | --- | --- |
 | 模型目录解析 | `--model-dir` / `PV_MODEL_DIR`（显式指定必须有效，不合法则视为“没有模型”）→ `<exe目录>/models/qwen3-vl-embedding-2b` → `<cwd>/models/…` → `<cwd>/../models/…` |
 | 权重加载 | **懒加载**：第一次编码才 mmap（4.2 GB 不复制），启动只解析目录 |
-| 强制离线 | 把模型目录伪装成 HF 缓存（`$HF_HOME/hub/models--Qwen--Qwen3-VL-Embedding-2B/snapshots/local/` + `refs/main`），并设 `HF_HUB_OFFLINE=1`；缓存里除 `preprocessor_config.json` 用**改写副本**（`max_pixels=1,843,200`）外，其余文件硬链接（跨设备退回复制） |
+| 强制离线 | 把模型目录伪装成 HF 缓存（`$HF_HOME/hub/models--Qwen--Qwen3-VL-Embedding-2B/snapshots/local/` + `refs/main`），并设 `HF_HUB_OFFLINE=1`；缓存里除 `preprocessor_config.json` 用**改写副本**（`max_pixels=3145728`）外，其余文件硬链接（跨设备退回复制） |
 | HF 缓存位置 | `--hf-cache-dir`（默认 `<data-dir>/hf-cache`），不写进模型目录（模型目录可能是只读挂载） |
 | 设备 | `--candle-device auto`（默认：二进制带 cuda 且驱动可用时用 GPU，否则 CPU）/ `cpu` / `cuda:N`；多卡时 auto 选取「算力优先、同算力比显存」 |
 | 精度 | `--candle-dtype f32`（默认）/ `f16` / `bf16` |
-| 指纹 | `Qwen/Qwen3-VL-Embedding-2B\|candle\|dtype=f32\|dim=2048\|pool=lasttoken\|norm=L2\|max_pixels=1843200\|max_length=8192\|backend=fastembed-7.1\|device=cpu` |
+| 指纹 | `Qwen/Qwen3-VL-Embedding-2B\|candle\|dtype=f32\|dim=2048\|pool=lasttoken\|norm=L2\|max_pixels=3145728\|max_length=8192\|backend=fastembed-7.1\|device=cpu` |
 
 ### 1.2 没有模型时的行为
 
@@ -71,8 +71,8 @@
 | 检查 | 条件 | 行为 |
 | --- | --- | --- |
 | 宽高比 | 长边/短边 > `--max-aspect-ratio`（默认 `8.0`，`0` 表示不检查） | **直接 `400 BAD_REQUEST`**，`detail` 带 `width/height/aspect_ratio/max_aspect_ratio` |
-| 像素数 | 宽×高 > `1,843,200`（`MAX_PIXELS`，与 preprocessor 口径一致） | 等比缩放至安全区后再编码；提示写进检索响应的 `warnings`，或作业日志 |
-| 尺寸在安全区 | 宽×高 ≤ `1,843,200` | 原样交给 fastembed，不重复解码 |
+| 像素数 | 宽×高 > `--max-pixels`（默认 `3,145,728`，约 1774²） | 等比缩放至安全区后再编码；提示写进检索响应的 `warnings`，或作业日志 |
+| 尺寸在安全区 | 宽×高 ≤ `--max-pixels` | 原样交给 fastembed，不重复解码 |
 
 只读文件头取尺寸：比例不合格的图（往往也是大文件）不需要整体解码就能拒绝。
 
@@ -141,7 +141,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
     "device": "cpu",
     "dim": 2048,
     "model_dir": "/workspace/prompt-vault/models/qwen3-vl-embedding-2b",
-    "max_pixels": 1843200,
+    "max_pixels": 3145728,
     "max_length": 8192,
     "loaded": false,
     "fingerprint": "Qwen/Qwen3-VL-Embedding-2B|candle|dtype=f32|dim=2048|…|device=cpu",

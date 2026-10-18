@@ -8,7 +8,7 @@
 //! 三个硬约束：
 //! 1. **强制离线**：只读本地模型，绝不联网。做法是把模型目录伪装成 HuggingFace
 //!    的缓存结构（`$HF_HOME/hub/models--.../snapshots/<rev>/`），再设 `HF_HUB_OFFLINE=1`。
-//! 2. **max_pixels = 1,843,200**（官方参考脚本口径）。fastembed 读的是模型目录里的
+//! 2. **max_pixels 默认 3,145,728**（`--max-pixels` 可覆盖）。fastembed 读的是模型目录里的
 //!    `preprocessor_config.json`（原值 1,310,720），所以我们在构造缓存时写一份
 //!    改写过的副本 —— **不动原始模型文件**。
 //! 3. **只支持 text-only / image-only**：fastembed 尚未实现图文混合输入，
@@ -30,7 +30,10 @@ pub const MODEL_REPO_ID: &str = "Qwen/Qwen3-VL-Embedding-2B";
 /// 缓存里的 revision 名。我们自己造，只要 `refs/main` 与 `snapshots/<rev>` 一致即可。
 const CACHE_REVISION: &str = "local";
 /// 官方参考脚本口径（开发文档 §4 / §11）
-pub const MAX_PIXELS: i64 = 1_843_200;
+/// 默认的像素安全区：约 1774×1774，对应约 3072 个视觉 token
+/// （factor = patch_size 16 × merge_size 2 = 32，1 token = 1024 像素）。
+/// 可用 `--max-pixels` 覆盖；硬上限是 max_length 推导出的约 8,366,080。
+pub const MAX_PIXELS: i64 = 3_145_728;
 pub const MIN_PIXELS: i64 = 4_096;
 pub const NATIVE_DIM: usize = 2_048;
 
@@ -235,31 +238,47 @@ pub struct CandleEncoder {
     max_media_bytes: u64,
     /// 宽高比上限（长边/短边），超限直接拒绝编码；对应 `--max-aspect-ratio`
     max_aspect_ratio: f64,
+    /// 像素安全区上限（超过则先等比缩小）；对应 `--max-pixels`
+    max_pixels: u64,
     /// 懒加载：第一次编码时才真正把权重 mmap 进来（2B 模型加载要几十秒）
     loaded: Mutex<Option<Arc<Qwen3VLEmbedding>>>,
 }
 
+/// 构造 [`CandleEncoder`] 的一组参数。
+///
+/// 单独抽出来是为了避免 `new` 参数过多（8 个），也方便以后加开关时不用改调用方签名。
+#[derive(Debug, Clone)]
+pub struct CandleOptions {
+    /// HuggingFace 缓存根目录（HF_HOME）
+    pub cache_dir: PathBuf,
+    /// 序列长度上限（8,192）
+    pub max_length: usize,
+    /// 权重 dtype
+    pub dtype: DType,
+    /// 计算设备选择
+    pub device: DeviceSpec,
+    /// 单张图片字节上限
+    pub max_media_bytes: u64,
+    /// 宽高比上限（0 = 不检查）
+    pub max_aspect_ratio: f64,
+    /// 像素安全区上限
+    pub max_pixels: u64,
+}
+
 impl CandleEncoder {
-    pub fn new(
-        model_dir: impl Into<PathBuf>,
-        cache_dir: impl Into<PathBuf>,
-        max_length: usize,
-        dtype: DType,
-        device_spec: DeviceSpec,
-        max_media_bytes: u64,
-        max_aspect_ratio: f64,
-    ) -> Self {
-        let (device, device_label, device_name) = resolve_device(device_spec);
+    pub fn new(model_dir: impl Into<PathBuf>, opts: CandleOptions) -> Self {
+        let (device, device_label, device_name) = resolve_device(opts.device);
         Self {
             model_dir: model_dir.into(),
-            cache_dir: cache_dir.into(),
-            max_length,
-            dtype,
+            cache_dir: opts.cache_dir,
+            max_length: opts.max_length,
+            dtype: opts.dtype,
             device,
             device_label,
             device_name,
-            max_media_bytes,
-            max_aspect_ratio,
+            max_media_bytes: opts.max_media_bytes,
+            max_aspect_ratio: opts.max_aspect_ratio,
+            max_pixels: opts.max_pixels,
             loaded: Mutex::new(None),
         }
     }
@@ -299,6 +318,11 @@ impl CandleEncoder {
         self.max_length
     }
 
+    /// 像素安全区上限（health 上报用）
+    pub fn max_pixels(&self) -> u64 {
+        self.max_pixels
+    }
+
     /// 编码指纹：必须把决定「向量落在哪个空间」的因素都写进去（开发文档 §10 铁律 1）。
     /// 与被移除的 Python 实现不同源，这正是索引闸门要拦住混用的依据。
     pub fn fingerprint(&self) -> String {
@@ -307,7 +331,7 @@ impl CandleEncoder {
             MODEL_REPO_ID,
             self.dtype_name(),
             NATIVE_DIM,
-            MAX_PIXELS,
+            self.max_pixels,
             self.max_length,
             self.device_label
         )
@@ -332,7 +356,7 @@ impl CandleEncoder {
         }
 
         // 先把缓存目录准备好（离线的前提）
-        let hf_home = prepare_hf_cache(&self.model_dir, &self.cache_dir)?;
+        let hf_home = prepare_hf_cache(&self.model_dir, &self.cache_dir, self.max_pixels)?;
         install_hf_env(&hf_home);
 
         tracing::info!(
@@ -380,7 +404,7 @@ impl CandleEncoder {
                     image_slots.push(idx);
                     let raw = decode_image_input(image, self.max_media_bytes)?;
                     // 比例检查（超限直接拒绝）+ 超尺寸等比缩小到安全区
-                    let prepared = preprocess_image(raw, self.max_aspect_ratio)?;
+                    let prepared = preprocess_image(raw, self.max_aspect_ratio, self.max_pixels)?;
                     image_payloads.push(prepared.bytes);
                     image_notices.push(prepared.notices);
                 }
@@ -494,7 +518,7 @@ struct Preprocessed {
 ///
 /// 只读 header 拿尺寸：比例不合格的图（往往正是大文件）不需要全解码就能拒绝；
 /// 尺寸本来就在安全区内的图原样返回，解码仍交给 fastembed，避免重复解码。
-fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64) -> ApiResult<Preprocessed> {
+fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64, max_pixels: u64) -> ApiResult<Preprocessed> {
     let (w, h) = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|e| ApiError::bad_request(format!("无法识别图片格式: {e}")))?
@@ -521,16 +545,23 @@ fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64) -> ApiResult<Preproce
     }
 
     let pixels = w as u64 * h as u64;
-    if pixels <= MAX_PIXELS as u64 {
+    if pixels <= max_pixels {
         return Ok(Preprocessed { bytes, notices: Vec::new() });
     }
 
     // 超过安全区：解码 → 等比缩到 MAX_PIXELS 以内 → 重新编码成 PNG 交回去
     let img = image::load_from_memory(&bytes)
         .map_err(|e| ApiError::bad_request(format!("解码图片失败: {e}")))?;
-    let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
-    let nw = ((w as f64 * scale).round() as u32).max(1);
-    let nh = ((h as f64 * scale).round() as u32).max(1);
+    // 用 floor 而不是 round：round 可能向上取整，让缩放后的像素数反过来超过安全区
+    // （实测 5400×3603 会落到 3,145,779 > 3,145,728，刚好越界 51 像素）
+    let scale = (max_pixels as f64 / pixels as f64).sqrt();
+    let mut nw = ((w as f64 * scale).floor() as u32).max(1);
+    let mut nh = ((h as f64 * scale).floor() as u32).max(1);
+    while nw as u64 * nh as u64 > max_pixels {
+        // 极端边界（floor 后仍越界，理论上不会发生）再收一格
+        nw = nw.saturating_sub(1).max(1);
+        nh = nh.saturating_sub(1).max(1);
+    }
     let scaled = img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3);
     let mut out = Vec::new();
     scaled
@@ -540,7 +571,7 @@ fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64) -> ApiResult<Preproce
     Ok(Preprocessed {
         bytes: out,
         notices: vec![format!(
-            "图片 {w}×{h}（{pixels} 像素）超过安全区 {MAX_PIXELS} 像素，已等比缩放到 {nw}×{nh}"
+            "图片 {w}×{h}（{pixels} 像素）超过安全区 {max_pixels} 像素，已等比缩放到 {nw}×{nh}"
         )],
     })
 }
@@ -570,14 +601,27 @@ fn install_hf_env(hf_home: &Path) {
 ///   refs/main              ← 内容 "local"
 ///   snapshots/local/
 ///     config.json          ← 硬链接（不复制，不占额外空间）
-///     preprocessor_config.json ← **改写过的副本**（max_pixels = 1,843,200）
+///     preprocessor_config.json ← **改写过的副本**（max_pixels 取当前配置）
 ///     tokenizer.json       ← 硬链接
 ///     model.safetensors    ← 硬链接（4.2 GB 秒级完成）
 /// ```
 ///
 /// 为什么不直接改原文件：那是原始下载的模型目录，改动它会破坏离线基线；
 /// 改写只作用在我们自己的缓存副本上。
-fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path) -> ApiResult<PathBuf> {
+/// 缓存副本里的 max_pixels / min_pixels 是否已经等于期望值。
+/// 读不出来（不存在、损坏）一律视为不一致，让它重写。
+fn config_matches(path: &Path, max_pixels: u64) -> bool {
+    let Ok(raw) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(cfg) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    cfg.get("max_pixels").and_then(|v| v.as_u64()) == Some(max_pixels)
+        && cfg.get("min_pixels").and_then(|v| v.as_u64()) == Some(MIN_PIXELS as u64)
+}
+
+fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path, max_pixels: u64) -> ApiResult<PathBuf> {
     for file in REQUIRED_FILES {
         let p = model_dir.join(file);
         if !p.is_file() {
@@ -602,26 +646,29 @@ fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path) -> ApiResult<PathBuf> {
     for file in REQUIRED_FILES {
         let src = model_dir.join(file);
         let dst = snapshot.join(file);
-        if dst.exists() {
-            continue;
-        }
+
         if *file == "preprocessor_config.json" {
-            // 只在这份副本里改口径，原始模型文件保持不动
+            // 副本里的 max_pixels 必须与当前配置一致。
+            // 不能「已存在就跳过」—— 改了 --max-pixels 之后旧副本会继续生效，
+            // 导致「指纹变了、实际口径还是旧的」这种最难查的错位。
+            if config_matches(&dst, max_pixels) {
+                continue;
+            }
             let raw = std::fs::read(&src)
                 .map_err(|e| ApiError::internal(format!("读取 preprocessor_config 失败: {e}")))?;
             let mut cfg: serde_json::Value = serde_json::from_slice(&raw)
                 .map_err(|e| ApiError::internal(format!("preprocessor_config 不是合法 JSON: {e}")))?;
-            cfg["max_pixels"] = serde_json::json!(MAX_PIXELS);
+            cfg["max_pixels"] = serde_json::json!(max_pixels);
             cfg["min_pixels"] = serde_json::json!(MIN_PIXELS);
             let pretty = serde_json::to_vec_pretty(&cfg)
                 .map_err(|e| ApiError::internal(format!("序列化 preprocessor_config 失败: {e}")))?;
             std::fs::write(&dst, pretty)
                 .map_err(|e| ApiError::internal(format!("写入 preprocessor_config 副本失败: {e}")))?;
-            tracing::info!(
-                max_pixels = MAX_PIXELS,
-                "已为 candle 缓存生成 preprocessor_config 副本（1,843,200 口径）"
-            );
+            tracing::info!(max_pixels, "已为 candle 缓存写入 preprocessor_config 副本");
         } else {
+            if dst.exists() {
+                continue;
+            }
             // 硬链接：同一文件系统上瞬间完成且不占额外空间；跨设备时退回复制
             if let Err(e) = std::fs::hard_link(&src, &dst) {
                 tracing::warn!(file = *file, error = %e, "硬链接失败，改为复制");
@@ -740,7 +787,7 @@ mod tests {
     #[test]
     fn rejects_extreme_aspect_ratio() {
         // 4000x100 = 40:1，超过默认 8:1
-        let err = preprocess_image(png_bytes(4000, 100), 8.0).expect_err("应当拒绝");
+        let err = preprocess_image(png_bytes(4000, 100), 8.0, MAX_PIXELS as u64).expect_err("应当拒绝");
         assert_eq!(err.code, "BAD_REQUEST", "宽高比超限必须是 400");
         assert!(err.message.contains("宽高比"), "错误信息要说明原因: {}", err.message);
     }
@@ -748,14 +795,14 @@ mod tests {
     #[test]
     fn accepts_16_by_9() {
         // 1280x720 = 1.78:1 且 92 万像素，在安全区内：既不拒绝也不缩放
-        let out = preprocess_image(png_bytes(1280, 720), 8.0).expect("16:9 不应被拒绝");
+        let out = preprocess_image(png_bytes(1280, 720), 8.0, MAX_PIXELS as u64).expect("16:9 不应被拒绝");
         assert!(out.notices.is_empty(), "未超安全区不应有提示");
     }
 
     #[test]
     fn downscales_oversized_image_into_safe_area() {
-        // 5400x3603 = 1945 万像素，远超 1,843,200
-        let pre = preprocess_image(png_bytes(5400, 3603), 8.0).expect("超大图应被缩小而不是报错");
+        // 5400x3603 = 1945 万像素，远超默认 3,145,728
+        let pre = preprocess_image(png_bytes(5400, 3603), 8.0, MAX_PIXELS as u64).expect("超大图应被缩小而不是报错");
         assert_eq!(pre.notices.len(), 1);
         assert!(pre.notices[0].contains("已等比缩放到"), "{}", pre.notices[0]);
         let (w, h) = dims(&pre.bytes);
@@ -770,10 +817,26 @@ mod tests {
     }
 
     #[test]
+    fn cache_config_matches_detects_stale_values() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("preprocessor_config.json");
+        std::fs::write(&path, r#"{"max_pixels":1843200,"min_pixels":4096}"#).expect("写文件");
+        assert!(
+            !config_matches(&path, 3_145_728),
+            "旧口径（1,843,200）必须判定为不一致，否则改了配置也不会重建副本"
+        );
+        assert!(config_matches(&path, 1_843_200), "同值应判定为一致");
+        assert!(
+            !config_matches(&dir.path().join("missing.json"), 1),
+            "副本缺失应判定为不一致"
+        );
+    }
+
+    #[test]
     fn keeps_image_within_safe_area_untouched() {
         let bytes = png_bytes(1024, 1024);
         let len = bytes.len();
-        let pre = preprocess_image(bytes, 8.0).expect("安全区内不应改动");
+        let pre = preprocess_image(bytes, 8.0, MAX_PIXELS as u64).expect("安全区内不应改动");
         assert!(pre.notices.is_empty());
         assert_eq!(pre.bytes.len(), len, "安全区内的图应原样返回（不重新编码）");
     }

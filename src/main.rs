@@ -67,6 +67,9 @@ struct Args {
     /// 图片宽高比上限（长边/短边，默认 8.0）；超过直接拒绝编码，0 表示不检查
     #[arg(long, env = "PV_MAX_ASPECT_RATIO", default_value_t = 8.0)]
     max_aspect_ratio: f64,
+    /// 图片像素安全区上限（默认 3,145,728 ≈ 1774²）；更大的图会先等比缩小
+    #[arg(long, env = "PV_MAX_PIXELS", default_value_t = 3_145_728)]
+    max_pixels: u64,
 }
 
 #[tokio::main]
@@ -127,6 +130,7 @@ async fn main() {
         web_dir: args.web_dir.clone(),
         max_media_bytes: args.max_media_bytes,
         max_aspect_ratio: args.max_aspect_ratio,
+        max_pixels: args.max_pixels,
     };
 
     let state = match AppState::new(cfg) {
