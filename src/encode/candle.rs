@@ -1,4 +1,4 @@
-//! 进程内编码后端：用 candle 直接加载 Qwen3-VL-Embedding-2B，替代 Python 侧车。
+//! 进程内编码后端：用 candle 直接加载 Qwen3-VL-Embedding-2B，替代原先的 Python 侧车。
 //!
 //! 为什么可以这么做（开发文档 §2 需要更新的一条）：
 //! 那里说「自己用 Rust 重写推理会得到不同的向量空间」——这句话仍然成立，
@@ -290,8 +290,13 @@ impl CandleEncoder {
         &self.cache_dir
     }
 
+    /// 序列长度上限（health 上报用）
+    pub fn max_length(&self) -> usize {
+        self.max_length
+    }
+
     /// 编码指纹：必须把决定「向量落在哪个空间」的因素都写进去（开发文档 §10 铁律 1）。
-    /// 与 Python 侧车的指纹不同 —— 这正是索引闸门要拦住混用的依据。
+    /// 与被移除的 Python 实现不同源，这正是索引闸门要拦住混用的依据。
     pub fn fingerprint(&self) -> String {
         format!(
             "{}|candle|dtype={}|dim={}|pool=lasttoken|norm=L2|max_pixels={}|max_length={}|backend=fastembed-7.1|device={}",
@@ -492,7 +497,7 @@ fn install_hf_env(hf_home: &Path) {
 ///     model.safetensors    ← 硬链接（4.2 GB 秒级完成）
 /// ```
 ///
-/// 为什么不直接改原文件：那个目录被 Python 侧车共用，动它会改变侧车行为；
+/// 为什么不直接改原文件：那是原始下载的模型目录，改动它会破坏离线基线；
 /// 改写只作用在我们自己的缓存副本上。
 fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path) -> ApiResult<PathBuf> {
     for file in REQUIRED_FILES {
@@ -560,14 +565,13 @@ fn prepare_hf_cache(model_dir: &Path, cache_dir: &Path) -> ApiResult<PathBuf> {
     Ok(hf_home)
 }
 
-/// 模型目录解析：显式指定优先，其次按约定路径查找（与 Python 侧车的查找顺序对齐）。
+/// 模型目录解析：显式指定优先，其次按约定路径查找。
 ///
 /// 顺序：
 /// 1. `--model-dir` / `PV_MODEL_DIR`（**显式指定就必须有效**，不合法直接报错，不回落）
 /// 2. `<exe 所在目录>/models/qwen3-vl-embedding-2b`
 /// 3. `<当前工作目录>/models/qwen3-vl-embedding-2b`
-/// 4. `<当前工作目录>/embed-server/models/qwen3-vl-embedding-2b`
-/// 5. `<当前工作目录>/../embed-server/models/qwen3-vl-embedding-2b`
+/// 4. `<当前工作目录>/../models/qwen3-vl-embedding-2b`（从仓库子目录启动时用）
 pub fn resolve_model_dir(explicit: Option<&Path>) -> ApiResult<PathBuf> {
     if let Some(dir) = explicit {
         if looks_like_model_dir(dir) {
@@ -588,18 +592,8 @@ pub fn resolve_model_dir(explicit: Option<&Path>) -> ApiResult<PathBuf> {
     }
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("models").join("qwen3-vl-embedding-2b"));
-        candidates.push(
-            cwd.join("embed-server")
-                .join("models")
-                .join("qwen3-vl-embedding-2b"),
-        );
         if let Some(parent) = cwd.parent() {
-            candidates.push(
-                parent
-                    .join("embed-server")
-                    .join("models")
-                    .join("qwen3-vl-embedding-2b"),
-            );
+            candidates.push(parent.join("models").join("qwen3-vl-embedding-2b"));
         }
     }
 

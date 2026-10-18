@@ -1,4 +1,4 @@
-//! 运维口：向量导出/重建/优化、金标校验、侧车刷新（开发文档 §6.3 导出通路 + §9）。
+//! 运维口：向量导出/重建/优化、金标校验、编码器状态刷新（开发文档 §6.3 导出通路 + §9）。
 //!
 //! ⚠️ `qdrant-edge` 只有 0.8.0，所以导出通路是**必做项**：保证随时能搬家（§6.3）。
 
@@ -84,30 +84,26 @@ pub async fn vector_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
     Ok(())
 }
 
-/// 金标校验（开发文档 §9）：侧车没实现 `/v1/verify` 时返回 `unsupported`，不假装通过。
+/// 金标校验（开发文档 §9）：candle 没有可复用的历史基线，恒为 unsupported，不假装通过。
 #[handler]
 pub async fn golden_verify(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = st(depot)?.clone();
-    let info: GoldenInfo = state.encoder.verify_golden().await;
+    let info: GoldenInfo = state.encoder.verify_golden();
     state.set_golden(info.clone());
     let will_block = info.status == "failed";
     res.render(Json(serde_json::json!({
         "golden": info,
         "blocks_jobs": will_block,
-        "note": "status=failed 时导入/编码作业会被拒绝（开发文档 §9.4）；unsupported=侧车未提供 /v1/verify"
+        "note": "status=failed 时导入/编码作业会被拒绝（开发文档 §9.4）；unsupported=当前后端没有历史基线"
     })));
     Ok(())
 }
 
+/// 编码器状态刷新：candle 没有远端可探，返回当前进程内的模型/设备/加载状态。
 #[handler]
 pub async fn encoder_refresh(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = st(depot)?.clone();
-    let sidecar = state.encoder.health().await;
-    let info = crate::encode::health_snapshot(
-        &state.encoder,
-        sidecar.as_ref().and_then(|h| h.model_dir.clone()),
-        sidecar,
-    );
+    let info = crate::encode::health_snapshot(&state.encoder);
     res.render(Json(info));
     Ok(())
 }

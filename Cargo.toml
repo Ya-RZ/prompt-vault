@@ -22,13 +22,11 @@ rusqlite = { version = "0.40", features = ["bundled", "serde_json"] }
 # --- 向量存储 + 检索（开发文档 §6：qdrant-edge 0.8.0，唯一索引）---
 qdrant-edge = "0.8.0"
 
-# --- 序列化 / 客户端 ---
+# --- 序列化 ---
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# 只跟本机侧车通信（http://127.0.0.1:8917），不需要任何 TLS 栈 —— 同样是为了交叉编译
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
-# --- 进程内编码（candle 后端，替代 Python 侧车；不引入 ONNX）---
+# --- 进程内编码（candle 后端；HTTP 侧车已移除，只加载本地模型）---
 # qwen3: candle 实现的 Qwen3-VL 多模态编码；hf-hub: 用它提供的缓存目录解析（离线可控）
 # ort-load-dynamic: fastembed 会无条件引入 `ort`(ONNX Runtime)，即使我们只用 candle 后端。
 #   不加这个 feature 时，链接期会要求 onnxruntime 的符号，Windows 上直接

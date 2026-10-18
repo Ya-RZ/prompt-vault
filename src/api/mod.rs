@@ -152,18 +152,8 @@ pub fn build_router() -> Router {
 #[handler]
 pub async fn health(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = state_of(depot)?;
-    // 每次健康检查顺手探一次侧车（失败不致命，只标记 DEGRADED）。
-    // mock 模式下不去探真侧车，否则 last_error 会误导。
-    let sidecar = if state.encoder.mode() == crate::encode::EncoderMode::Mock {
-        None
-    } else {
-        state.encoder.health().await
-    };
-    let encoder = crate::encode::health_snapshot(
-        &state.encoder,
-        sidecar.as_ref().and_then(|h| h.model_dir.clone()),
-        sidecar,
-    );
+    // 编码在进程内完成，health 只读当前状态（不再有 HTTP 侧车可探）。
+    let encoder = crate::encode::health_snapshot(&state.encoder);
     let golden = state.golden_snapshot();
     let index_fp = state.index_fingerprint()?;
     let points = state.vectors.points_estimate();

@@ -203,7 +203,7 @@ jobs:
           本目录已含 CUDA runtime（cublas / cublasLt / cudart / curand / nvrtc）。
 
           编码模型需单独准备，用 --model-dir 指向 Qwen3-VL-Embedding-2B 目录：
-            prompt-vault.exe --encoder candle --model-dir <模型目录>
+            prompt-vault.exe --model-dir <模型目录>
           "@ | Out-File -Encoding utf8 $full\README.txt
 
           Compress-Archive -Path "$full\*" -DestinationPath "dist/prompt-vault-windows-cuda-full.zip" -CompressionLevel Optimal -Force
@@ -225,7 +225,7 @@ jobs:
           不想装 CUDA Toolkit 就下载完整包（full）。
 
           编码模型需单独准备：
-            prompt-vault.exe --encoder candle --model-dir <模型目录>
+            prompt-vault.exe --model-dir <模型目录>
           "@ | Out-File -Encoding utf8 $lite\README.txt
 
           Compress-Archive -Path "$lite\*" -DestinationPath "dist/prompt-vault-windows-cuda-lite.zip" -CompressionLevel Optimal -Force

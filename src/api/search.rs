@@ -191,7 +191,7 @@ pub async fn similar_by_kind(
         "sparse" => {
             if !state.vectors.sparse_enabled() {
                 return Err(ApiError::sparse_unavailable(
-                    "本索引未启用稀疏向量；侧车也尚未返回 sparse（开发文档 §5.4 改动 2 未实施）",
+                    "本索引未启用稀疏向量（建 shard 时 --sparse=false）",
                 ));
             }
             let outcome = state
@@ -200,10 +200,10 @@ pub async fn similar_by_kind(
                 .await?
                 .into_iter()
                 .next()
-                .ok_or_else(|| ApiError::encoder_error("侧车没有返回向量"))?;
+                .ok_or_else(|| ApiError::encoder_error("编码器没有返回向量"))?;
             let Some((indices, values)) = outcome.sparse.clone() else {
                 return Err(ApiError::sparse_unavailable(
-                    "侧车响应里没有 sparse 字段（开发文档 §5.4 改动 2 未实施）",
+                    "candle 后端不产出 BM25 稀疏向量，纯稀疏检索暂不可用；请用 mode=lexical 或 hybrid",
                 ));
             };
             let hits = state.vectors.search_sparse(

@@ -47,26 +47,22 @@ export type ApiErrorCode =
  * ========================================================== */
 
 export type HealthStatus = 'READY' | 'DEGRADED';
-export type EncoderMode = 'live' | 'mock';
+/** 编码只有一条路径：进程内 candle 加载本地模型（侧车与 mock 均已移除） */
+export type EncoderMode = 'candle';
 export type GoldenStatus = 'passed' | 'failed' | 'unsupported' | 'unchecked';
 
 export interface EncoderInfo {
   reachable: boolean;
-  url: string;
   model: string;
   device: string;
   dim: number;
-  /**
-   * 契约 §3 示例给了具体值，但实测后端在 mock 模式 / 侧车不可达时返回 `null`，
-   * 因此前端按可空处理（已列入交付报告「待确认」）。
-   */
   model_dir: string | null;
   max_pixels: number | null;
   max_length: number | null;
+  /** 权重是否已真正加载（懒加载：首次编码后才为 true） */
+  loaded: boolean;
   fingerprint: string;
   mode: EncoderMode;
-  /** 以下为后端实际返回、契约 §3 未列出的附加字段，仅作可选读取 */
-  template_overhead?: unknown;
   last_error?: string | null;
   last_checked_at?: string | null;
 }

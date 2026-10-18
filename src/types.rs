@@ -115,16 +115,16 @@ pub struct UpdateMetaRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncoderInfo {
     pub reachable: bool,
-    pub url: String,
     pub model: Option<String>,
     pub device: Option<String>,
     pub dim: Option<i64>,
     pub model_dir: Option<String>,
     pub max_pixels: Option<i64>,
     pub max_length: Option<i64>,
-    pub template_overhead: Option<i64>,
+    /// 权重是否已真正加载进内存（懒加载：首次编码后才为 true）
+    pub loaded: bool,
     pub fingerprint: Option<String>,
-    /// live（真侧车）| mock（开发用假编码器，未运行模型）
+    /// 恒为 "candle"（侧车已移除，保留字段是为了前端/契约兼容）
     pub mode: String,
     pub last_error: Option<String>,
     pub last_checked_at: String,
@@ -423,64 +423,7 @@ pub struct JobListQuery {
     pub kind: Option<String>,
 }
 
-// ---------------------------------------------------------------- 侧车
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SidecarHealth {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub device: Option<String>,
-    #[serde(default)]
-    pub dim: Option<i64>,
-    #[serde(default)]
-    pub max_pixels: Option<i64>,
-    #[serde(default)]
-    pub max_length: Option<i64>,
-    #[serde(default)]
-    pub template_overhead: Option<i64>,
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    #[serde(default)]
-    pub model_dir: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbedItem {
-    #[serde(default)]
-    pub index: Option<usize>,
-    #[serde(default)]
-    pub kind: Option<String>,
-    pub embedding: Vec<f32>,
-    #[serde(default)]
-    pub resized: Option<String>,
-    #[serde(default)]
-    pub vision_tokens: Option<i64>,
-    /// 开发文档 §5.4 改动 2 的预留字段：侧车给了就用，没给就降级
-    #[serde(default)]
-    pub sparse: Option<SparseVectorDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SparseVectorDto {
-    pub indices: Vec<u32>,
-    pub values: Vec<f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbedResponse {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub dim: Option<i64>,
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    pub data: Vec<EmbedItem>,
-    #[serde(default)]
-    pub elapsed_seconds: Option<f64>,
-}
+// ---------------------------------------------------------------- 编码输入
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedInputItem {
@@ -488,11 +431,6 @@ pub struct EmbedInputItem {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbedRequest {
-    pub input: Vec<EmbedInputItem>,
 }
 
 // ---------------------------------------------------------------- 其它

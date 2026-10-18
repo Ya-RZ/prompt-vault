@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use crate::db::{Db, META_INDEX_FINGERPRINT};
-use crate::encode::{EncoderClient, EncoderMode};
+use crate::encode::EncoderClient;
 use crate::error::{ApiError, ApiResult};
 use crate::jobs::JobManager;
 use crate::types::GoldenInfo;
@@ -25,9 +25,7 @@ pub struct Config {
     /// 是否在索引里启用稀疏（BM25）向量 —— 只在建 shard 时生效
     pub sparse_enabled: bool,
     pub quant: QuantMode,
-    pub encoder_url: String,
-    pub encoder_mode: EncoderMode,
-    /// candle 模式的模型目录（None = 按约定路径查找）
+    /// candle 模型目录（None = 按约定路径查找）
     pub model_dir: Option<PathBuf>,
     /// candle 权重精度（f32 / f16 / bf16）
     pub candle_dtype: String,
@@ -35,7 +33,7 @@ pub struct Config {
     pub candle_device: String,
     /// candle 的 HuggingFace 缓存根目录（HF_HOME）；不再写进模型目录
     pub hf_cache_dir: PathBuf,
-    /// 序列长度上限（与侧车口径一致：8192）
+    /// 序列长度上限（默认 8192）
     pub max_length: usize,
     /// web/dist 的路径（开发期直接读盘；release 走 rust-embed）
     pub web_dir: PathBuf,
@@ -106,38 +104,29 @@ impl AppState {
             )?,
         }
         let vectors = VectorStore::open(&cfg.vector_dir, cfg.dim, cfg.sparse_enabled, cfg.quant)?;
-        // candle 模式：启动时就把模型目录解析好（显式指定必须有效，找不到直接启动失败，
-        // 比跑到第一次编码才发现问题早得多）。权重本身仍是懒加载 —— 2B 模型 mmap 要几十秒。
-        let candle = match cfg.encoder_mode {
-            EncoderMode::Candle => {
-                let dir = crate::encode::candle::resolve_model_dir(cfg.model_dir.as_deref())
-                    .map_err(|e| anyhow::anyhow!("candle 模型目录解析失败: {}", e.message))?;
-                let dtype = crate::encode::candle::parse_dtype(&cfg.candle_dtype);
-                tracing::info!(
-                    model_dir = %dir.display(),
-                    dtype = %cfg.candle_dtype,
-                    device = %cfg.candle_device,
-                    hf_cache = %cfg.hf_cache_dir.display(),
-                    max_length = cfg.max_length,
-                    "candle 后端已配置（权重将在首次编码时加载）"
-                );
-                Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
-                    dir,
-                    cfg.hf_cache_dir.clone(),
-                    cfg.max_length,
-                    dtype,
-                    crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
-                    cfg.max_media_bytes,
-                )))
-            }
-            _ => None,
-        };
-        let encoder = EncoderClient::new(
-            cfg.encoder_url.clone(),
-            cfg.encoder_mode,
-            cfg.dim,
-            candle,
+        // 编码只有一条路径：进程内 candle 加载本地模型。
+        // 模型目录在启动时解析（显式指定必须有效，找不到直接启动失败）——
+        // 比跑到第一次编码才发现「没有模型」早得多。权重本身仍是懒加载，2B 模型 mmap 要几十秒。
+        let model_dir = crate::encode::candle::resolve_model_dir(cfg.model_dir.as_deref())
+            .map_err(|e| anyhow::anyhow!("candle 模型目录解析失败: {}", e.message))?;
+        let dtype = crate::encode::candle::parse_dtype(&cfg.candle_dtype);
+        tracing::info!(
+            model_dir = %model_dir.display(),
+            dtype = %cfg.candle_dtype,
+            device = %cfg.candle_device,
+            hf_cache = %cfg.hf_cache_dir.display(),
+            max_length = cfg.max_length,
+            "candle 后端已配置（权重将在首次编码时加载）"
         );
+        let candle = Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
+            model_dir,
+            cfg.hf_cache_dir.clone(),
+            cfg.max_length,
+            dtype,
+            crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
+            cfg.max_media_bytes,
+        )));
+        let encoder = EncoderClient::new(cfg.dim, candle);
 
         Ok(Arc::new(Self {
             db,
@@ -176,7 +165,7 @@ impl AppState {
             .with_detail(serde_json::json!({
                 "index_fingerprint": existing,
                 "incoming_fingerprint": fingerprint,
-                "hint": "不同空间的向量不能混进同一个索引：确认编码设备/侧车配置后全量重编码"
+                "hint": "不同空间的向量不能混进同一个索引：确认模型/精度/设备后全量重编码"
             }))),
         }
     }

@@ -129,7 +129,9 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
         </Tag>
       </Tooltip>
 
-      <Tooltip title={`侧车地址：${encoder.url || '—'}\n模型：${encoder.model || '—'}`}>
+      <Tooltip
+        title={`模型目录：${encoder.model_dir || '—'}\n模型：${encoder.model || '—'}\n权重加载：${encoder.loaded ? '已加载' : '未加载（首次编码时加载）'}`}
+      >
         <Tag style={{ marginInlineEnd: 0 }}>
           {encoder.device || '—'} / {encoder.dim || '—'} 维
         </Tag>

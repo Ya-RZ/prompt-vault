@@ -2,7 +2,8 @@
 //!
 //! 覆盖三个变量：向量来源（原始 vs retrieve）、filter（有/无）、rescore（开/关）。
 
-use prompt_vault::encode::mock_dense;
+mod common;
+use common::mock_dense;
 use prompt_vault::vector::{build_filter, QuantMode, VectorStore, KIND_ASSET, VEC_IMAGE};
 
 const DIM: usize = 2048;

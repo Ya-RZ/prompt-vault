@@ -283,8 +283,8 @@ $:
               - prompt-vault-linux-x86_64
               - prompt-vault-windows-x86_64.exe
 
-              运行：`./prompt-vault --encoder mock`（不跑模型的链路验证）
-              或指向编码侧车：`--encoder-url http://127.0.0.1:8917`
+              运行：`./prompt-vault --model-dir <models/qwen3-vl-embedding-2b>`（进程内 candle 编码）
+              （侧车已移除，编码只走本地模型；模型权重需自行准备，不随产物分发）
 
         - name: 上传附件
           image: cnbcool/attachments:latest
@@ -297,7 +297,7 @@ $:
 
 # ---------------------------------------------------------------- CUDA 变体模板
 #
-# ⚠️ 现在是**注释状态**：candle 已经接进来了（--encoder candle），但默认构建**不开** cuda feature，
+# ⚠️ 现在是**注释状态**：candle 已经接进来了（进程内编码，侧车已移除），但默认构建**不开** cuda feature，
 #    所以下面的 job 现在编出来仍是纯 CPU 版。要出 CUDA 版时把这段接进 main.push 的数组即可
 #    （多条 pipeline 会并发执行，互不影响）；注意 candle 的 cuda 需要 `--features cuda`，
 #    并且 fastembed 的 candle 后端要打开对应 feature。

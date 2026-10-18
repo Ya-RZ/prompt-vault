@@ -1,6 +1,7 @@
 # 模型权重：4.0 GB，绝不入库（开发文档 §3 / §10 铁律 8）
+# candle 从 <仓库根>/models/qwen3-vl-embedding-2b 加载（侧车已移除）
+/models/
 /kit/models/
-/embed-server/models/
 *.safetensors
 *.gguf
 pytorch_model*.bin
@@ -10,8 +11,9 @@ pytorch_model*.bin
 /data/
 /target/
 
-# Python 侧车（禁改，也不入版本控制）
-/embed-server/.venv/
+# 杂项
+*.log
+.env
 **/__pycache__/
 *.pyc
 

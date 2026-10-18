@@ -2,7 +2,7 @@
 //!
 //! 两条路径并存：
 //! 1. **词法路（零模型成本）**：SQLite 模糊命中 prompt/tag/path → 元数据 join 到图；
-//! 2. **向量路**：文本/图片编码 → Qdrant 稠密（+ 稀疏，若侧车提供了 sparse）。
+//! 2. **向量路**：文本/图片编码 → Qdrant 稠密（+ 稀疏，若编码器提供了 sparse）。
 //!
 //! 稀疏路缺失时**显式降级**并在 `warnings` 里说明，绝不假装成功。
 
@@ -78,7 +78,7 @@ impl<'a> Engine<'a> {
             let space_ok = self.state.spaces_are_consistent(warnings_from(&mut warnings))?;
             if !space_ok {
                 return Err(ApiError::fingerprint_mismatch(
-                    "侧车指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
+                    "编码指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
                 ));
             }
 
@@ -86,7 +86,7 @@ impl<'a> Engine<'a> {
             let dense_list = self.dense_recall(&outcome, query.k)?;
             merge_ranked(&mut candidates, "dense", &dense_list);
 
-            // 稀疏路：只有侧车给了 sparse 且索引启用了稀疏才有
+            // 稀疏路：只有编码器给了 sparse 且索引启用了稀疏才有
             let sparse_available = self.state.vectors.sparse_enabled()
                 && outcome.sparse.as_ref().map(|(i, _)| !i.is_empty()).unwrap_or(false);
             if sparse_available {
@@ -115,27 +115,13 @@ impl<'a> Engine<'a> {
                 }
             } else if mode == "hybrid" {
                 // 稀疏路只在「编码器真的产出了 BM25 稀疏向量」时才走。
-                // 现状：candle 后端只给稠密向量，Python 侧车也不返回 sparse，
-                // 所以 hybrid 实际上一直是 dense + lexical —— 这里如实说，别让调用方以为三路都跑了。
+                // candle 只给稠密向量，所以 hybrid 实际一直是 dense + lexical —— 如实说明，
+                // 别让调用方以为三路都跑了。
                 warnings.push(
-                    match self.state.encoder.mode() {
-                        crate::encode::EncoderMode::Candle => {
-                            "当前 candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"
-                        }
-                        crate::encode::EncoderMode::Mock => {
-                            "MOCK 编码器不产出稀疏向量：hybrid 实际是 dense + lexical"
-                        }
-                        crate::encode::EncoderMode::Live => {
-                            "编码侧车没有返回 sparse 向量：hybrid 实际是 dense + lexical"
-                        }
-                    }
-                    .to_string(),
+                    "candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"
+                        .to_string(),
                 );
                 effective = "dense+lexical".to_string();
-            }
-            if self.state.encoder.mode() == crate::encode::EncoderMode::Mock {
-                warnings
-                    .push("当前是 MOCK 编码器：向量由 sha256 派生，未运行真实模型，排序仅供链路验证".to_string());
             }
         }
 
@@ -158,7 +144,7 @@ impl<'a> Engine<'a> {
         let mut space_warnings: Vec<String> = Vec::new();
         if !self.state.spaces_are_consistent(&mut space_warnings)? {
             return Err(ApiError::fingerprint_mismatch(
-                "侧车指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
+                "编码指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
             ));
         }
         warnings.extend(space_warnings);
@@ -222,7 +208,7 @@ impl<'a> Engine<'a> {
             .collect();
         merge_ranked(&mut candidates, "dense", &list);
 
-        // 稀疏以图搜图：只有侧车给了图片 sparse 才有（本项目的图片 sparse 预留）
+        // 稀疏以图搜图：只有编码器给了图片 sparse 才有（本项目的图片 sparse 预留）
         if self.state.vectors.sparse_enabled() {
             if let Some((indices, values)) = outcome.sparse.as_ref() {
                 let filter = build_filter(Some(KIND_ASSET), nsfw, &tags);
@@ -239,11 +225,6 @@ impl<'a> Engine<'a> {
                     merge_ranked(&mut candidates, "sparse", &list);
                 }
             }
-        }
-        if self.state.encoder.mode() == crate::encode::EncoderMode::Mock {
-            warnings.push(
-                "当前是 MOCK 编码器：图片向量由内容摘要派生，未运行真实模型，排序仅供链路验证".to_string(),
-            );
         }
 
         let query = SearchQuery {
@@ -318,7 +299,7 @@ impl<'a> Engine<'a> {
         let mut outcomes = self.state.encoder.embed(items).await?;
         outcomes
             .pop()
-            .ok_or_else(|| ApiError::encoder_error("侧车未返回该条向量"))
+            .ok_or_else(|| ApiError::encoder_error("编码器未返回该条向量"))
     }
 
     async fn encode_image(&self, data_url: String) -> ApiResult<EncodeOutcome> {
@@ -326,7 +307,7 @@ impl<'a> Engine<'a> {
         let mut outcomes = self.state.encoder.embed(items).await?;
         outcomes
             .pop()
-            .ok_or_else(|| ApiError::encoder_error("侧车未返回该条图片向量"))
+            .ok_or_else(|| ApiError::encoder_error("编码器未返回该条图片向量"))
     }
 
     /// 稠密召回：文本查 text（提示词点）与 image（资产点）两个向量名，合并。

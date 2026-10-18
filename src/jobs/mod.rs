@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::encode::EncoderMode;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use crate::types::EmbedInputItem;
@@ -678,11 +677,14 @@ pub fn job_to_dto(job: &crate::db::JobRow, errors: Vec<crate::types::JobErrorDto
     }
 }
 
-/// 侧车能力探测结果（作业开始时记录到 message，便于事后归因）。
+/// 编码能力摘要（作业开始时记录到 message，便于事后归因）。
 pub fn encoder_capability_note(state: &Arc<AppState>) -> serde_json::Value {
+    let candle = state.encoder.candle_encoder();
     json!({
-        "mode": state.encoder.mode().as_str(),
-        "mock": state.encoder.mode() == EncoderMode::Mock,
+        "mode": "candle",
+        "device": candle.as_ref().map(|c| c.device_label().to_string()),
+        "dtype": candle.as_ref().map(|c| c.dtype_name().to_string()),
+        "fingerprint": state.encoder.fingerprint_hint(),
         "vector_names": [VEC_IMAGE, VEC_TEXT],
         "sparse_enabled_in_index": state.vectors.sparse_enabled(),
     })

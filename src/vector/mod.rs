@@ -381,7 +381,7 @@ impl VectorStore {
 
     /// 稀疏查询（BM25）。
     ///
-    /// 现状：现有两个编码后端都不产出稀疏向量（candle 只给稠密，Python 侧车也不返回 sparse），
+    /// 现状：现有编码后端（candle）只产出稠密向量，不产出 BM25 稀疏向量，
     /// 所以这条路径在正常检索里走不到 —— 保留它是为了 import/导出与将来接入 BM25 时不必重建 shard。
     /// 上层（`search`）会按 `sparse_enabled` 与实际是否拿到稀疏向量决定要不要调。
     pub fn search_sparse(

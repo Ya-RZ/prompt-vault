@@ -1,4 +1,4 @@
-import { Alert, Layout, Menu, Space, Typography } from 'antd';
+import { Layout, Menu, Space, Typography } from 'antd';
 import { useCallback } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
@@ -25,8 +25,6 @@ export function AppLayout() {
 
   const selectedKey =
     NAV_ITEMS.find((item) => location.pathname.startsWith(item.key))?.key ?? '/assets';
-
-  const isMock = health?.encoder?.mode === 'mock';
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f5f5f5' }}>
@@ -76,16 +74,6 @@ export function AppLayout() {
           style={{ borderBottom: 'none', marginTop: 4 }}
         />
       </div>
-
-      {isMock ? (
-        <Alert
-          type="warning"
-          showIcon
-          banner
-          title="MOCK 编码器（未运行模型）"
-          description="主服务正使用内置确定性伪向量（fingerprint = mock|dim=2048|v1），并未调用编码侧车或真实模型。此模式仅用于验证「导入 → 编码 → 入库 → 检索 → 前端」全链路，检索结果不具备语义含义。"
-        />
-      ) : null}
 
       <Layout.Content style={{ padding: 16, maxWidth: 1720, width: '100%', margin: '0 auto' }}>
         <Outlet />

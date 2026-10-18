@@ -2,9 +2,9 @@
 //!
 //! 启动顺序（开发文档 §9.4）：
 //! 1. 打开 SQLite + Qdrant Edge shard；
-//! 2. 探一次侧车 `/health`（拿指纹与设备，失败不致命）；
-//! 3. 跑一次金标校验 `/v1/verify` —— **failed 就拒绝启动**；
-//!    `unsupported`（侧车未实现该接口）只警告，不拦。
+//! 2. 解析模型目录并打印编码指纹与设备（candle 进程内，没有远端可探）；
+//! 3. 跑一次金标校验 —— **failed 就拒绝启动**；
+//!    `unsupported`（当前后端没有历史基线）只记录，不拦。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,7 +17,6 @@ use rust_embed::RustEmbed;
 use salvo::prelude::*;
 
 use prompt_vault::api;
-use prompt_vault::encode::EncoderMode;
 use prompt_vault::state::{AppState, Config};
 use prompt_vault::vector::QuantMode;
 
@@ -32,13 +31,7 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long, env = "PV_MEDIA_DIR", default_value = "media")]
     media_dir: PathBuf,
-    /// 编码侧车地址（Python FastAPI，本项目不修改它）
-    #[arg(long, env = "PV_ENCODER_URL", default_value = "http://127.0.0.1:8917")]
-    encoder_url: String,
-    /// live = 真侧车（HTTP）；candle = 进程内 candle 直接加载模型；mock = 假编码器（不运行模型）
-    #[arg(long, env = "PV_ENCODER", default_value = "live")]
-    encoder: String,
-    /// candle 模式的模型目录；不指定则按约定路径查找（显式指定必须有效）
+    /// candle 模型目录；不指定则按约定路径查找（显式指定必须有效）
     #[arg(long, env = "PV_MODEL_DIR")]
     model_dir: Option<PathBuf>,
     /// candle 权重精度：f32（默认，最稳）/ f16 / bf16
@@ -50,7 +43,7 @@ struct Args {
     /// candle 的 HuggingFace 缓存目录（默认 <data-dir>/hf-cache）
     #[arg(long, env = "PV_HF_CACHE_DIR")]
     hf_cache_dir: Option<PathBuf>,
-    /// candle 的序列长度上限（与侧车一致：8192）
+    /// candle 的序列长度上限（默认 8192）
     #[arg(long, env = "PV_MAX_LENGTH", default_value_t = 8192)]
     max_length: usize,
     /// 向量维度：本项目固定 2048 不截断（开发文档 §4.2）
@@ -101,7 +94,6 @@ async fn main() {
     let flags = Arc::new(Flags {
         host: args.host.clone(),
         port: args.port,
-        encoder_url: args.encoder_url.clone(),
         web_dir: args.web_dir.clone(),
     });
 
@@ -117,8 +109,6 @@ async fn main() {
         dim: args.dim,
         sparse_enabled: args.sparse,
         quant: QuantMode::parse(&args.quant),
-        encoder_url: args.encoder_url.clone(),
-        encoder_mode: EncoderMode::parse(&args.encoder),
         model_dir: args.model_dir.clone(),
         candle_dtype: args.candle_dtype.clone(),
         candle_device: args.candle_device.clone(),
@@ -141,38 +131,16 @@ async fn main() {
 
     print_banner(&state, &flags);
 
-    // ---- 启动自检：侧车 + 金标（开发文档 §9.4）----
-    // mock 模式不去探真侧车，否则日志里会出现"侧车不可达"的误导性告警。
-    let sidecar = match state.encoder.mode() {
-        EncoderMode::Mock => {
-            tracing::info!("mock 编码器已启用：跳过侧车探测（本模式不加载任何模型）");
-            None
-        }
-        EncoderMode::Candle => {
-            let fp = state.encoder.fingerprint_hint();
-            tracing::info!(fingerprint = %fp, "candle 后端：跳过 HTTP 侧车探测（编码在进程内完成）");
-            None
-        }
-        EncoderMode::Live => state.encoder.health().await,
-    };
-    match (&sidecar, state.encoder.mode()) {
-        (Some(h), _) => tracing::info!(
-            model = ?h.model,
-            device = ?h.device,
-            dim = ?h.dim,
-            fingerprint = ?h.fingerprint,
-            "侧车就绪"
-        ),
-        // mock / candle 本来就不需要 HTTP 侧车，这里不打告警
-        (None, EncoderMode::Mock) | (None, EncoderMode::Candle) => {}
-        (None, _) => tracing::warn!(
-            url = %state.cfg.encoder_url,
-            error = ?state.encoder.last_error(),
-            "侧车不可达：检索与编码会返回 503；服务照常启动（DEGRADED）"
-        ),
-    }
+    // ---- 启动自检：编码指纹 + 金标（开发文档 §9.4）----
+    // 侧车已移除：编码在进程内完成，这里只打印指纹与设备，
+    // 供排查「索引与当前模型是否同一空间」。
+    tracing::info!(
+        fingerprint = %state.encoder.fingerprint_hint(),
+        device = ?state.encoder.candle_encoder().map(|c| c.device_display()),
+        "candle 后端就绪（编码在进程内完成）"
+    );
 
-    let golden = state.encoder.verify_golden().await;
+    let golden = state.encoder.verify_golden();
     tracing::info!(status = %golden.status, detail = ?golden.detail, "金标校验结果");
     let blocked = golden.status == "failed";
     state.set_golden(golden.clone());
@@ -234,16 +202,25 @@ async fn wait_for_shutdown() {
 struct Flags {
     host: String,
     port: u16,
-    encoder_url: String,
     web_dir: PathBuf,
 }
 
 fn print_banner(state: &Arc<AppState>, flags: &Flags) {
     let sparse = if state.vectors.sparse_enabled() { "启用" } else { "关闭" };
     let index_fp = state.index_fingerprint().ok().flatten().unwrap_or_else(|| "(尚未写入)".into());
+    let encoder = state.encoder.candle_encoder();
+    let model_dir = encoder
+        .as_ref()
+        .map(|c| c.model_dir().display().to_string())
+        .unwrap_or_else(|| "(未配置)".to_string());
+    let device = encoder
+        .as_ref()
+        .map(|c| c.device_display())
+        .unwrap_or_else(|| "cpu".to_string());
     println!("──────────────────────────────────────────────");
     println!("prompt-vault {}  http://{}:{}", env!("CARGO_PKG_VERSION"), flags.host, flags.port);
-    println!("  编码侧车 : {}  (mode={})", flags.encoder_url, state.encoder.mode().as_str());
+    println!("  编码后端 : candle（进程内）  device={device}");
+    println!("  模型目录 : {model_dir}");
     println!("  SQLite   : {}", state.cfg.db_path.display());
     println!("  向量索引 : {}  dim={} 量化={} 稀疏={}", state.cfg.vector_dir.display(), state.cfg.dim, state.vectors.quantization().as_str(), sparse);
     println!("  索引指纹 : {index_fp}");

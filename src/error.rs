@@ -40,7 +40,7 @@ impl ApiError {
         Self::new("NOT_FOUND", 404, message)
     }
 
-    /// 侧车连不上（开发文档 §5.3 强制离线 + 独立进程）。
+    /// 编码器不可用（模型目录缺失或权重加载失败）。
     pub fn encoder_unreachable(message: impl Into<String>) -> Self {
         Self::new("ENCODER_UNREACHABLE", 503, message)
     }
@@ -50,7 +50,7 @@ impl ApiError {
         Self::new("FINGERPRINT_MISMATCH", 409, message)
     }
 
-    /// 图片超序列预算，侧车 413 透出（开发文档 §10 铁律 3）。
+    /// 图片超出大小上限（开发文档 §10 铁律 3）。
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self::new("PAYLOAD_TOO_LARGE", 413, message)
     }

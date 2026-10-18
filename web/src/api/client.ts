@@ -224,13 +224,13 @@ const ERROR_COPY: Record<string, ErrorCopy> = {
       '请改用与索引相同的编码器（同一模型/精度/设备），或用当前编码器重建索引后重试。',
   },
   ENCODER_UNREACHABLE: {
-    title: '编码侧车不可达（503）',
+    title: '编码不可用（503）',
     hint:
-      '主服务连不上 Python 编码侧车（默认 127.0.0.1:8917），编码与语义检索暂不可用。' +
-      '此时仍可使用纯词法检索（mode=lexical）。请先启动侧车，再在页头确认状态回到 READY。',
+      '进程内 candle 编码器无法工作：通常是模型目录没找到或权重加载失败。' +
+      '此时仍可使用纯词法检索（mode=lexical）。请检查启动日志里的「模型目录」与加载错误。',
   },
   PAYLOAD_TOO_LARGE: {
-    title: '图片超出序列预算（413）',
+    title: '图片超出大小上限（413）',
     hint:
       '该图会被侧车静默截断，因此主服务直接拒绝。可参考下方 detail 中的 plan，' +
       '裁剪图片或调低 max_pixels 后重试。',
