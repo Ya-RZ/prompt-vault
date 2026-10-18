@@ -3,6 +3,7 @@ import { Card, Tag, Tooltip, Typography } from 'antd';
 import type { Asset } from '../api';
 import { formatBytes, formatDateTime } from '../utils/format';
 import { CoverImage } from './CoverImage';
+import { tagColor } from '../utils/tagColor';
 
 const { Text } = Typography;
 
@@ -103,7 +104,7 @@ export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps)
         {tags.length > 0 ? (
           <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {tags.slice(0, MAX_CARDS_TAGS).map((tag) => (
-              <Tag key={tag} color="processing" style={{ marginInlineEnd: 0 }}>
+              <Tag key={tag} style={{ marginInlineEnd: 0, ...tagColor(tag) }}>
                 {tag}
               </Tag>
             ))}

@@ -36,6 +36,7 @@ import {
 } from '../api';
 import { CoverImage } from '../components/CoverImage';
 import { ErrorState } from '../components/ErrorState';
+import { tagColor } from '../utils/tagColor';
 
 const { Text, Paragraph } = Typography;
 
@@ -377,6 +378,15 @@ export function SearchPage() {
               value={tags}
               onChange={setTags}
               options={tags.map((tag) => ({ value: tag, label: tag }))}
+              tagRender={({ label, value, closable, onClose }) => (
+                <Tag
+                  style={{ marginInlineEnd: 4, ...tagColor(String(value)) }}
+                  closable={closable}
+                  onClose={onClose}
+                >
+                  {label}
+                </Tag>
+              )}
             />
             <Tooltip title="默认过滤 NSFW 资产；打开表示包含 NSFW。">
               <Space size={6}>

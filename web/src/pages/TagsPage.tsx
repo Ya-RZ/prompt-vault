@@ -23,6 +23,7 @@ import {
   type TagListResponse,
 } from '../api';
 import { ErrorState } from '../components/ErrorState';
+import { tagColor } from '../utils/tagColor';
 import { useAsync } from '../hooks/useAsync';
 import { formatNumber } from '../utils/format';
 
@@ -159,13 +160,19 @@ export function TagsPage() {
             {items.map((item) => (
               <Tag
                 key={item.id}
-                color={item.asset_count > 0 ? 'processing' : 'default'}
+                style={{
+                  fontSize: 13,
+                  padding: '2px 8px',
+                  marginInlineEnd: 0,
+                  // 0 引用的标签用透明度区分，但仍然是彩色
+                  opacity: item.asset_count > 0 ? 1 : 0.55,
+                  ...tagColor(item.name),
+                }}
                 closable={busyId !== item.id}
                 onClose={(event) => {
                   event.preventDefault();
                   void handleDelete(item);
                 }}
-                style={{ fontSize: 13, padding: '2px 8px', marginInlineEnd: 0 }}
               >
                 {item.name}
                 <Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>

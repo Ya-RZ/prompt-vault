@@ -39,6 +39,7 @@ import {
   type TriState,
 } from '../api';
 import { AssetCard } from '../components/AssetCard';
+import { tagColor } from '../utils/tagColor';
 import { AssetDetailDrawer } from '../components/AssetDetailDrawer';
 import { AssetUploadModal } from '../components/AssetUploadModal';
 import { CoverImage } from '../components/CoverImage';
@@ -329,6 +330,14 @@ export function AssetsPage() {
               setPage(1);
             }}
             options={tagOptions}
+            optionRender={(option) => (
+              <Tag style={{ marginInlineEnd: 0, ...tagColor(String(option.value)) }}>
+                {option.label}
+              </Tag>
+            )}
+            labelRender={({ value, label }) => (
+              <Tag style={{ marginInlineEnd: 0, ...tagColor(String(value)) }}>{label}</Tag>
+            )}
           />
           <Select
             allowClear

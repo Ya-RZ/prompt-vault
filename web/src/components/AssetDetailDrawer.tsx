@@ -32,6 +32,7 @@ import { useAsync } from '../hooks/useAsync';
 import { formatBytes, formatDateTime, formatNumber, shortFingerprint } from '../utils/format';
 import { CoverImage } from './CoverImage';
 import { ErrorState } from './ErrorState';
+import { tagColor } from '../utils/tagColor';
 
 const { Text, Paragraph } = Typography;
 
@@ -306,6 +307,15 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
           placeholder="输入标签后回车"
           tokenSeparators={[',', '，', ' ']}
           options={tagDraft.map((tag) => ({ value: tag, label: tag }))}
+          tagRender={({ label, value, closable, onClose }) => (
+            <Tag
+              style={{ marginInlineEnd: 4, ...tagColor(String(value)) }}
+              closable={closable}
+              onClose={onClose}
+            >
+              {label}
+            </Tag>
+          )}
         />
       </div>
 
