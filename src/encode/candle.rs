@@ -591,7 +591,13 @@ impl CandleEncoder {
                     image_slots.push(idx);
                     let raw = decode_image_input(image, self.max_media_bytes)?;
                     // 比例检查（超限直接拒绝）+ 超尺寸等比缩小到安全区
+                    let t_pre = std::time::Instant::now();
                     let prepared = preprocess_image(raw, self.max_aspect_ratio, self.max_pixels)?;
+                    tracing::info!(
+                        index = idx,
+                        preprocess_ms = t_pre.elapsed().as_millis() as u64,
+                        "图片预处理耗时（解码/缩放/重编码）"
+                    );
                     image_payloads.push(prepared.bytes);
                     image_notices.push(prepared.notices);
                 }
@@ -652,6 +658,7 @@ impl CandleEncoder {
             // 在 8GB 卡上单张就接近上限，4 张必然 CUDA_ERROR_OUT_OF_MEMORY ——
             // 这也是「改了 f16 仍然 OOM」的原因：f16 只把权重减半，救不了批量激活。
             for (i, payload) in image_payloads.iter().enumerate() {
+                let t_enc = std::time::Instant::now();
                 let vectors = encoder
                     .embed_image_bytes(&[payload.as_slice()])
                     .map_err(|e| {
@@ -666,6 +673,8 @@ impl CandleEncoder {
                             ApiError::encoder_error(format!("candle 图片编码失败: {e}"))
                         }
                     })?;
+                let encode_ms = t_enc.elapsed().as_millis() as u64;
+                tracing::info!(index = i, encode_ms, "单张图片推理耗时");
                 let vector = vectors
                     .into_iter()
                     .next()
@@ -785,9 +794,13 @@ fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64, max_pixels: u64) -> A
         nh = nh.saturating_sub(1).max(1);
     }
     let scaled = img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3);
+    // 用 JPEG 而不是 PNG：这一步只是「把缩放结果交给 fastembed」的中间载体，
+    // PNG 编码一张 1536×1024 要几百毫秒，JPEG 只要几十毫秒；有损对嵌入质量影响可忽略
+    // （fastembed 还会再按 patch 对齐缩放一次）。
     let mut out = Vec::new();
-    scaled
-        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+    let mut cur = std::io::Cursor::new(&mut out);
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cur, 92);
+    enc.encode_image(&scaled)
         .map_err(|e| ApiError::internal(format!("重新编码图片失败: {e}")))?;
 
     Ok(Preprocessed {
