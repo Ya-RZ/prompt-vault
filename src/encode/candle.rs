@@ -645,12 +645,33 @@ impl CandleEncoder {
         }
 
         if !image_payloads.is_empty() {
-            let refs: Vec<&[u8]> = image_payloads.iter().map(Vec::as_slice).collect();
-            let vectors = encoder
-                .embed_image_bytes(&refs)
-                .map_err(|e| ApiError::encoder_error(format!("candle 图片编码失败: {e}")))?;
-            for ((slot, vector), notices) in image_slots.iter().zip(vectors).zip(&image_notices) {
-                out[*slot] = Some(EncodeOutcome {
+            // **逐张编码**，不要整批送进去。
+            //
+            // fastembed 的 embed_image_bytes 会把这一批图片的视觉 token 拼成一个 batch：
+            // 作业默认 batch_size=4，等于 4 张图的激活值同时驻留显存。3072 token 的图
+            // 在 8GB 卡上单张就接近上限，4 张必然 CUDA_ERROR_OUT_OF_MEMORY ——
+            // 这也是「改了 f16 仍然 OOM」的原因：f16 只把权重减半，救不了批量激活。
+            for (i, payload) in image_payloads.iter().enumerate() {
+                let vectors = encoder
+                    .embed_image_bytes(&[payload.as_slice()])
+                    .map_err(|e| {
+                        let text = e.to_string();
+                        if text.contains("OUT_OF_MEMORY") || text.to_ascii_lowercase().contains("out of memory") {
+                            ApiError::encoder_error(format!(
+                                "编码图片时显存不足（{e}）。当前按单张编码，仍失败说明单张就超限：\
+                                 请降低 --max-pixels（当前 {}）或改用 --candle-dtype f16 / --candle-device cpu",
+                                self.max_pixels
+                            ))
+                        } else {
+                            ApiError::encoder_error(format!("candle 图片编码失败: {e}"))
+                        }
+                    })?;
+                let vector = vectors
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| ApiError::internal("图片编码结果为空"))?;
+                let slot = image_slots[i];
+                out[slot] = Some(EncodeOutcome {
                     dense: vector,
                     sparse: None,
                     // fastembed 不回传 resize 后的尺寸与视觉 token 数（开发文档 §5.1 说这两个
@@ -659,7 +680,7 @@ impl CandleEncoder {
                     vision_tokens: None,
                     kind: Some("image".to_string()),
                     fingerprint: fingerprint.clone(),
-                    notices: notices.clone(),
+                    notices: image_notices[i].clone(),
                 });
             }
         }
