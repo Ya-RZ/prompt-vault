@@ -1,46 +1,30 @@
 import { ReloadOutlined } from '@ant-design/icons';
 import {
-  Alert,
   Button,
   Card,
   Col,
   Empty,
   Progress,
   Row,
-  Segmented,
   Space,
   Spin,
   Statistic,
-  Tag,
   Tooltip,
   Typography,
 } from 'antd';
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 
 import {
-  fetchFacets,
   fetchSize,
   fetchStats,
-  type FacetBucket,
-  type FacetKey,
-  type FacetsResponse,
   type SizeResponse,
   type StatsResponse,
 } from '../api';
-import { DistributionBars } from '../components/DistributionBars';
 import { ErrorState } from '../components/ErrorState';
 import { useAsync } from '../hooks/useAsync';
 import { formatBytes, formatNumber, safePercent } from '../utils/format';
 
 const { Text } = Typography;
-
-const FACET_OPTIONS: Array<{ value: FacetKey; label: string }> = [
-  { value: 'tag', label: 'tag' },
-  { value: 'kind', label: 'kind' },
-  { value: 'nsfw', label: 'nsfw' },
-  { value: 'month', label: 'month' },
-  { value: 'source', label: 'source' },
-];
 
 /** percent 优先用后端值；缺失/非法时按 encoded/total 兜底，永不出 NaN */
 function clampPercent(
@@ -80,13 +64,15 @@ function StatCard({
   return hint ? <Tooltip title={hint}>{content}</Tooltip> : content;
 }
 
-/** /stats —— 总量、分布、编码进度、作业状态、体积 */
-export function StatsPage() {
-  const [facetKey, setFacetKey] = useState<FacetKey>('tag');
-  const [facetData, setFacetData] = useState<FacetsResponse | null>(null);
-  const [facetLoading, setFacetLoading] = useState(false);
-  const [facetError, setFacetError] = useState<unknown>(null);
+/** 资产类型 → 中文名（按类型卡片用） */
+const KIND_LABEL: Record<string, string> = {
+  image: '图片',
+  video: '视频',
+  other: '其他',
+};
 
+/** /stats —— 总量、编码进度、体积、按类型 */
+export function StatsPage() {
   const statsLoader = useCallback((signal: AbortSignal) => fetchStats(signal), []);
   const sizeLoader = useCallback((signal: AbortSignal) => fetchSize(signal), []);
 
@@ -104,27 +90,10 @@ export function StatsPage() {
     reload: reloadSize,
   } = useAsync<SizeResponse>(sizeLoader, []);
 
-  const runFacetQuery = async (key: FacetKey) => {
-    setFacetKey(key);
-    setFacetLoading(true);
-    setFacetError(null);
-    try {
-      const response = await fetchFacets(key);
-      setFacetData(response);
-    } catch (cause) {
-      setFacetError(cause);
-      setFacetData(null);
-    } finally {
-      setFacetLoading(false);
-    }
-  };
-
   const reloadAll = () => {
     reloadStats();
     reloadSize();
   };
-
-  const statsBuckets = (items: FacetBucket[] | null | undefined): FacetBucket[] => items ?? [];
 
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
@@ -185,7 +154,7 @@ export function StatsPage() {
 
           {/* 编码进度 + 作业状态 + 体积 */}
           <Row gutter={[12, 12]}>
-            <Col xs={24} lg={12}>
+            <Col xs={24} lg={16}>
               <Card size="small" variant="outlined" title="编码进度">
                 <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                   <Progress
@@ -213,29 +182,7 @@ export function StatsPage() {
                 </Space>
               </Card>
             </Col>
-            <Col xs={24} lg={6}>
-              <Card size="small" variant="outlined" title="作业状态">
-                <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-                  <Space size={8}>
-                    <Tag color="processing">running</Tag>
-                    <Text strong>{formatNumber(stats.jobs?.running)}</Text>
-                  </Space>
-                  <Space size={8}>
-                    <Tag color="success">succeeded</Tag>
-                    <Text strong>{formatNumber(stats.jobs?.succeeded)}</Text>
-                  </Space>
-                  <Space size={8}>
-                    <Tag color="error">failed</Tag>
-                    <Text strong>{formatNumber(stats.jobs?.failed)}</Text>
-                  </Space>
-                  <Space size={8}>
-                    <Tag>cancelled</Tag>
-                    <Text strong>{formatNumber(stats.jobs?.cancelled)}</Text>
-                  </Space>
-                </Space>
-              </Card>
-            </Col>
-            <Col xs={24} lg={6}>
+            <Col xs={24} lg={8}>
               <Card size="small" variant="outlined" title="磁盘占用">
                 {sizeError ? (
                   <ErrorState error={sizeError} context="体积统计加载失败" onRetry={reloadSize} />
@@ -258,67 +205,27 @@ export function StatsPage() {
             </Col>
           </Row>
 
-          {/* 四组分布 */}
+          {/* 按类型（卡片形式） */}
           <Row gutter={[12, 12]}>
-            <Col xs={24} lg={12}>
-              <Card size="small" variant="outlined" title={`按标签（by_tag，共 ${statsBuckets(stats.by_tag).length} 项）`}>
-                <DistributionBars items={statsBuckets(stats.by_tag)} limit={12} emptyText="还没有标签" />
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
-              <Card size="small" variant="outlined" title="按月份（by_month）">
-                <DistributionBars items={statsBuckets(stats.by_month)} limit={12} emptyText="还没有数据" />
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
-              <Card size="small" variant="outlined" title="按来源目录（by_source）">
-                <DistributionBars items={statsBuckets(stats.by_source)} limit={12} emptyText="还没有数据" />
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
-              <Card size="small" variant="outlined" title="按类型（by_kind）">
-                <DistributionBars items={statsBuckets(stats.by_kind)} emptyText="还没有数据" />
-              </Card>
-            </Col>
+            {(stats.by_kind ?? []).length === 0 ? (
+              <Col span={24}>
+                <Card size="small" variant="outlined" title="按类型">
+                  <Text type="secondary">还没有资产</Text>
+                </Card>
+              </Col>
+            ) : (
+              (stats.by_kind ?? []).map((item) => (
+                <Col xs={12} sm={8} lg={6} key={item.key}>
+                  <StatCard
+                    title={KIND_LABEL[item.key] ?? item.key}
+                    value={formatNumber(item.count)}
+                    hint={`占全部资产 ${safePercent(item.count, stats.assets?.total ?? 0).toFixed(1)}%`}
+                  />
+                </Col>
+              ))
+            )}
           </Row>
 
-          {/* facets 查询 */}
-          <Card
-            size="small"
-            variant="outlined"
-            title="分布统计"
-            extra={
-              <Space size={8}>
-                <Segmented
-                  value={facetKey}
-                  onChange={(value) => void runFacetQuery(value as FacetKey)}
-                  options={FACET_OPTIONS}
-                />
-                <Button size="small" loading={facetLoading} onClick={() => void runFacetQuery(facetKey)}>
-                  查询
-                </Button>
-              </Space>
-            }
-          >
-            {facetError ? (
-              <ErrorState error={facetError} context="Facet 查询失败" />
-            ) : facetData ? (
-              <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-                <Alert
-                  type="info"
-                  showIcon
-                  title={`key=${facetData.key} · 数据来源：${facetData.source}`}
-                  description="source 为 qdrant-facet 表示由 Qdrant facet() 统计，其它值表示退回 SQL 聚合。"
-                />
-                <DistributionBars
-                  items={(facetData.items ?? []).map((item) => ({ key: item.value, count: item.count }))}
-                  limit={20}
-                />
-              </Space>
-            ) : (
-              <Text type="secondary">选择 key 后点击「查询」，或直接切换上方选项。</Text>
-            )}
-          </Card>
         </>
       ) : (
         <Card variant="outlined">
