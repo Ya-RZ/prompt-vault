@@ -237,6 +237,7 @@ fn print_banner(state: &Arc<AppState>, flags: &Flags) {
     println!("  向量索引 : {}  dim={} 量化={} 稀疏={}", state.cfg.vector_dir.display(), state.cfg.dim, state.vectors.quantization().as_str(), sparse);
     println!("  索引指纹 : {index_fp}");
     println!("  媒体目录 : {}", state.cfg.media_dir.display());
+    println!("  缩略图   : {}（等比缩放、不裁剪，按需生成）", state.cfg.thumb_dir.display());
     println!("  前端产物 : {}", flags.web_dir.display());
     println!("──────────────────────────────────────────────");
 }

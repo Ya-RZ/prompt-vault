@@ -104,9 +104,15 @@ fn thumbnail(
 
     let img = image::open(src)
         .map_err(|e| ApiError::bad_request(format!("无法解码图片 {rel}: {e}")))?;
+    // `thumbnail` 保持宽高比缩放到不超过 target_w×target_w 的框内 —— 不裁剪。
     let thumb = img.thumbnail(target_w, target_w);
-    thumb
-        .save_with_format(&out, image::ImageFormat::Jpeg)
+    // 默认 JPEG 质量是 75，放大到卡片尺寸后观感偏糊，这里提到 85
+    let file = std::fs::File::create(&out)
+        .map_err(|e| ApiError::internal(format!("缩略图创建失败: {e}")))?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 85);
+    encoder
+        .encode_image(&thumb)
         .map_err(|e| ApiError::internal(format!("缩略图写入失败: {e}")))?;
     Ok(out)
 }

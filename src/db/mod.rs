@@ -242,7 +242,7 @@ impl AssetRow {
 
     pub fn thumb_url(&self) -> String {
         if self.kind == "image" {
-            format!("/media/{}?w=256", encode_media_path(&self.rel_path))
+            format!("/media/{}?w=800", encode_media_path(&self.rel_path))
         } else {
             self.media_url()
         }

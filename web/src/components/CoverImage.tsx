@@ -9,7 +9,7 @@ export interface CoverImageProps {
   blurred?: boolean;
   onReveal?: () => void;
   /**
-   * 封面高度比（height / width）。
+   * 封面宽高比（width / height，与 CSS `aspect-ratio` 同向）。
    * 传数值时按该比例占位 —— 瀑布流卡片靠它得到不同高度，
    * 同时避免图片加载前高度塌陷造成 Masonry 重排抖动。不传则用 CSS 的 1:1。
    */

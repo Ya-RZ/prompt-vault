@@ -35,7 +35,8 @@ body {
 .pv-card-cover img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* 容器比例取图片真实比例，所以 contain 正好铺满；极端比例时留边而不是裁切 */
+  object-fit: contain;
   display: block;
 }
 

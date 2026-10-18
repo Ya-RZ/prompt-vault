@@ -10,11 +10,18 @@ const { Text } = Typography;
 const MAX_CARDS_TAGS = 5;
 
 /** 封面高度比夹在合理区间，避免极端长图/超宽图把瀑布流拉变形 */
+/**
+ * 封面比例 = 图片真实 **宽高比**（width / height）。
+ *
+ * 注意方向：CSS 的 `aspect-ratio` 是 `width / height`，之前这里传的是 `height / width`，
+ * 横图会被渲染成竖框、再被 `object-fit` 裁掉大半 —— 这是「首页图片不等比例」的主因。
+ * 只保留一个极端保护（8:1），避免病态长图把瀑布流撑爆。
+ */
 function coverRatio(asset: Asset): number {
   if (!asset.width || !asset.height) return 1;
-  const ratio = asset.height / asset.width;
+  const ratio = asset.width / asset.height;
   if (!Number.isFinite(ratio) || ratio <= 0) return 1;
-  return Math.min(1.9, Math.max(0.55, ratio));
+  return Math.min(8, Math.max(0.125, ratio));
 }
 
 export interface AssetCardProps {
