@@ -1,5 +1,9 @@
--- prompt-vault 初始 schema（开发文档 §8 + INTERFACES.md §2）
--- 约定：向量本体不在 SQLite，只在 Qdrant Edge；这里存指纹，与向量同生命周期。
+-- prompt-vault schema（开发文档 §8 + INTERFACES.md §2）
+-- 约定：向量本体不在 SQLite，只在 Qdrant Edge；这里只存指纹，与向量同生命周期。
+--
+-- 2026-10 合并：原先拆成 0001（sha256 结构）+ 0002（重建为 blake3 结构）两份，
+-- 因为已明确「清库重导」、没有历史数据要迁移，合并成单文件最终结构。
+-- 若库仍是旧结构（asset 没有 hash 列），启动会直接给出可操作的错误提示。
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -8,22 +12,25 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE TABLE IF NOT EXISTS asset (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT    NOT NULL CHECK (kind IN ('image', 'video')),
+    kind        TEXT    NOT NULL CHECK (kind IN ('image', 'video', 'other')),
     rel_path    TEXT    NOT NULL UNIQUE,
+    -- 人可读的标题（上传后填写），与文件路径无关；为空时前端回退显示文件名
+    title       TEXT,
     bytes       INTEGER NOT NULL DEFAULT 0,
     width       INTEGER,
     height      INTEGER,
     duration_ms INTEGER,
-    sha256      TEXT,
+    -- 内容摘要（blake3，十六进制）；>100MB 的文件只对前 100MB 求值
+    hash        TEXT,
+    -- 哈希算法标识：以后换算法时靠它区分，不靠猜
+    hash_algo   TEXT    NOT NULL DEFAULT 'blake3' CHECK (hash_algo IN ('blake3')),
     nsfw        INTEGER NOT NULL DEFAULT 0,
     added_at    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_asset_added_at ON asset (added_at DESC);
 CREATE INDEX IF NOT EXISTS idx_asset_kind     ON asset (kind);
 CREATE INDEX IF NOT EXISTS idx_asset_nsfw     ON asset (nsfw);
--- 注意：这里**不要**再建 sha256 索引。0001 每次启动都会执行（靠 IF NOT EXISTS 幂等），
--- 而 0002 会把 asset 重建成 hash 结构；那时再对不存在的 sha256 列建索引会报
--- `no such column: sha256`，导致所有已迁移的库都起不来。
+CREATE INDEX IF NOT EXISTS idx_asset_hash     ON asset (hash);
 
 CREATE TABLE IF NOT EXISTS prompt (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

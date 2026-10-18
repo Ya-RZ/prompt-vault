@@ -106,7 +106,7 @@
 3. **不产出 sparse**：hybrid 实际是 dense + lexical，`warnings` 里显式说明；`SPARSE_UNAVAILABLE` 只在索引未启用稀疏或显式 `mode=sparse` 时出现。
 4. **金标校验为 `unsupported`**：candle 没有可复用的历史基线（与旧实现不同源），不拦作业。
 
-## 2. 数据模型（SQLite，见 `migrations/0001_init.sql` + `0002_hash_blake3.sql`）
+## 2. 数据模型（SQLite，见 `migrations/0001_init.sql`，单一 schema 文件）
 
 ```sql
 asset(id INTEGER PK, kind TEXT['image'|'video'|'other'], rel_path TEXT UNIQUE, bytes INTEGER,

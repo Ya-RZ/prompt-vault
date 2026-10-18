@@ -281,7 +281,7 @@ fn import_one(
         return Ok(ImportOutcome::Skipped);
     }
 
-    // kind 先按扩展名判，图片再试着读尺寸；读不出尺寸的归到 other（迁移 0002 起允许）。
+    // kind 先按扩展名判，图片再试着读尺寸；读不出尺寸的归到 other。
     let (kind, width, height) = probe_kind(src);
 
     // 需求 4/5：blake3（>100MB 只读前 100MB）。目标路径依赖它，所以**总要算**，
@@ -311,7 +311,7 @@ fn import_one(
 
 // ---------------------------------------------------------------- 归档路径 / 哈希
 
-/// 资产指纹算法（迁移 0002 起由 sha256 换成 blake3）。
+/// 资产指纹算法（blake3）。
 pub const HASH_ALGO: &str = "blake3";
 
 /// 大文件只对前 100MB 求哈希（需求 4）：库里可能混进几个 GB 的视频，
