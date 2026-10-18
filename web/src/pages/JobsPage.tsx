@@ -261,7 +261,7 @@ export function JobsPage() {
         recursive: values.recursive ?? true,
         extensions: values.extensions && values.extensions.length > 0 ? values.extensions : DEFAULT_EXTENSIONS,
         default_prompt_role: values.default_prompt_role?.trim() || 'caption',
-        dedupe_by: values.dedupe_by?.trim() || 'sha256',
+        dedupe_by: values.dedupe_by?.trim() || 'blake3',
       };
       const job = await createImportJob(payload);
       message.success(`导入作业已创建：#${job.id}`);
@@ -541,7 +541,7 @@ export function JobsPage() {
               recursive: true,
               extensions: DEFAULT_EXTENSIONS,
               default_prompt_role: 'caption',
-              dedupe_by: 'sha256',
+              dedupe_by: 'blake3',
             }}
             onFinish={handleCreateImport}
           >
@@ -557,8 +557,13 @@ export function JobsPage() {
             <Form.Item name="default_prompt_role" label="默认提示词角色 default_prompt_role">
               <Input placeholder="caption" />
             </Form.Item>
-            <Form.Item name="dedupe_by" label="去重字段 dedupe_by">
-              <Input placeholder="sha256" />
+            <Form.Item name="dedupe_by" label="去重方式">
+              <Select
+                options={[
+                  { value: 'blake3', label: '按内容哈希去重（blake3）' },
+                  { value: 'none', label: '不去重（重复文件也导入）' },
+                ]}
+              />
             </Form.Item>
           </Form>
         </Space>

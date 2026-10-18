@@ -25,7 +25,8 @@ pub struct ImportParams {
     /// 扩展名白名单（小写、不带点）。**空 = 不过滤**，任意类型都可导入（进 `other` 桶）。
     pub extensions: Vec<String>,
     pub default_prompt_role: String,
-    /// 去重开关：`none` 关闭 hash 去重；其余值（兼容旧请求里的 `sha256` / `rel_path`）一律按 blake3 去重。
+    /// 去重开关：`none` 关闭去重；其余值（含历史请求里传的 `sha256` / `rel_path`）都视为「按内容哈希去重」。
+    /// 哈希算法本身固定是 **blake3**，这个字段只控制开关，不控制算法。
     /// 注意指纹无论如何都会算 —— 归档目标路径 `<hash 前两位>/` 依赖它。
     pub dedupe_by: String,
 }

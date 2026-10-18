@@ -406,7 +406,8 @@ pub struct ImportJobRequest {
     pub extensions: Option<Vec<String>>,
     #[serde(default)]
     pub default_prompt_role: Option<String>,
-    /// `none` 关闭 hash 去重；其余值（兼容旧的 `sha256` / `rel_path`）按 blake3 去重
+    /// `none` 关闭去重；其余值（含历史请求里的 `sha256` / `rel_path`）都按内容哈希去重。
+    /// 哈希算法固定为 blake3 —— 这个字段只当开关用。
     #[serde(default)]
     pub dedupe_by: Option<String>,
 }
