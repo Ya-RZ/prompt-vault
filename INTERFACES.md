@@ -105,11 +105,12 @@
 3. **不产出 sparse**：hybrid 实际是 dense + lexical，`warnings` 里显式说明；`SPARSE_UNAVAILABLE` 只在索引未启用稀疏或显式 `mode=sparse` 时出现。
 4. **金标校验为 `unsupported`**：candle 没有可复用的历史基线（与旧实现不同源），不拦作业。
 
-## 2. 数据模型（SQLite，见 `migrations/0001_init.sql`）
+## 2. 数据模型（SQLite，见 `migrations/0001_init.sql` + `0002_hash_blake3.sql`）
 
 ```sql
-asset(id INTEGER PK, kind TEXT['image'|'video'], rel_path TEXT UNIQUE, bytes INTEGER,
-      width INTEGER, height INTEGER, duration_ms INTEGER, sha256 TEXT,
+asset(id INTEGER PK, kind TEXT['image'|'video'|'other'], rel_path TEXT UNIQUE, bytes INTEGER,
+      width INTEGER, height INTEGER, duration_ms INTEGER,
+      hash TEXT, hash_algo TEXT NOT NULL DEFAULT 'blake3',
       nsfw INTEGER DEFAULT 0, added_at TEXT)
 prompt(id INTEGER PK, asset_id INTEGER → asset ON DELETE CASCADE, role TEXT,
        text TEXT, created_at TEXT)
@@ -217,7 +218,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 ### `GET /api/stats/facets?key=tag|kind|nsfw|month|source`
 
 ```json
-{ "key": "tag", "source": "qdrant-facet", "items": [ { "value": "cat", "count": 120 } ] }
+{ "key": "tag", "source": "sql", "items": [ { "value": "cat", "count": 120 } ] }
 ```
 
 ### `GET /api/stats/size`
@@ -230,6 +231,14 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 
 ## 4. 资产
 
+### `POST /api/assets/upload`
+
+`multipart/form-data`，字段名 `file`。落盘 → 按 `<media>/<hash 前两位>/<image|video|other>/` 归档 → 建资产（未编码）→ 返回 `201` + `AssetDto`。
+
+- 大小上限由 `--max-media-bytes` 控制（默认 256 MB），超限 → `413 PAYLOAD_TOO_LARGE`
+- 同一 blake3 hash 已存在 → 直接返回已有资产（不重复落盘）
+- kind 判定：扩展名 + 能否读出图片/视频尺寸；判不出的归 `other`
+
 ### `GET /api/assets`
 
 查询参数：`page`(1) `page_size`(50) `q`(模糊匹配 rel_path 或 prompt 文本) `tag`(可重复)
@@ -240,7 +249,8 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 {
   "items": [ {
     "id": 1, "kind": "image", "rel_path": "wallhaven/2026/cat.jpg", "bytes": 123456,
-    "width": 1024, "height": 1024, "duration_ms": null, "sha256": "…",
+    "width": 1024, "height": 1024, "duration_ms": null,
+    "hash": "…", "hash_algo": "blake3",
     "nsfw": false, "added_at": "2026-10-16T12:00:00Z",
     "tags": ["cat", "sunset"],
     "prompts": [ { "id": 1, "role": "caption", "text": "…", "created_at": "…" } ],
@@ -292,6 +302,24 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 ```
 
 ---
+
+## 4.5 标签
+
+### `GET /api/tags?page=1&page_size=100&q=`
+
+```json
+{ "items": [ { "id": 1, "name": "cat", "asset_count": 12 } ], "total": 3 }
+```
+
+按 `asset_count` 降序、`name` 升序；`q` 对标签名做 LIKE（通配符已转义）。
+
+### `DELETE /api/tags/{id}`
+
+→ `200 {"deleted": true}`；不存在 → `404`；仍被资产引用 → `409 CONFLICT`，`detail.asset_count` 给出引用数。
+
+### `POST /api/tags/cleanup`
+
+→ `{"deleted": 7}`，删除 `asset_tag` 里没有任何引用的标签行。
 
 ## 5. 搜索
 
@@ -348,7 +376,7 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 
 | key | 数据来源 | 说明 |
 | --- | --- | --- |
-| `tag` | `qdrant-facet`（失败回落 `sql`） | **只统计资产点**（`kind=asset`）；不加这个过滤会把同一张图按 asset + prompt 算两遍（实测标签计数会翻倍） |
+| `tag` | **`sql`（2026-10 起固定）** | 改为实时 SQL 统计：Qdrant facet 只读已 optimize 的段，详情页新加的标签落在 delta 段里查不到（原来「加了标签但过滤器不显示」的根因）；口径与 `GET /api/tags` 的 `asset_count` 一致 |
 | `nsfw` | `qdrant-facet`（失败回落 `sql`） | 同上，只统计资产点 |
 | `kind` | `sql` | payload 里的 `kind` 是**点类型**（asset/prompt），页面要的是**媒体类型**（image/video），后者在 SQLite |
 | `month` / `source` | `sql` | `source` 取 `rel_path` 第一段目录 |
@@ -373,17 +401,34 @@ Qdrant Edge payload 约定（`collection` 名 `pv`）：
 ### `POST /api/jobs/import`
 
 ```json
-{ "root": "media", "recursive": true, "extensions": ["jpg","jpeg","png","webp","gif","mp4"],
-  "default_prompt_role": "caption", "dedupe_by": "sha256" }
+{ "root": "inbox", "recursive": true, "extensions": [],
+  "default_prompt_role": "caption", "dedupe_by": "blake3" }
 ```
 
 → `202` + job 对象（`id` 为 uuid）。**导入前先做金标校验**（§9.4）：不通过 → `GOLDEN_FAILED`。
+
+导入语义（2026-10 起）：
+
+| 项 | 规则 |
+| --- | --- |
+| `root` | 绝对路径，或相对路径（**以可执行文件所在目录为基准**，不是 cwd） |
+| `extensions` | 小写、不带点；**空数组 = 不过滤**，任意类型都可导入（落 `other` 桶） |
+| 归档 | 原始文件被**移动**到 `<media>/<hash 前两位>/{image|video|other}/<文件名>` |
+| 哈希 | blake3；文件 > 100 MB 时**只取前 100 MB** 计算 |
+| 去重 | 同一 hash 已存在 → 跳过，源文件留在原位；同名不同内容 → 加 `<hash8>-` 前缀，不覆盖 |
+| 自跳过 | 源文件已在 media 目录（或其子目录）内 → 跳过，避免自己搬自己 |
+| 隐藏文件 | `.` 开头、`Thumbs.db`、`desktop.ini` 不导入 |
 
 ### `POST /api/jobs/encode`
 
 ```json
 { "limit": null, "only_missing": true, "batch_size": 8, "asset_ids": null, "prompt_ids": null }
 ```
+
+### `DELETE /api/jobs/{id}`
+
+→ `200 {"deleted": true}`；`200` 之外：不存在 → `404`，状态为 `running`/`pending`/`paused` → `409 CONFLICT`（提示先取消）。
+删除会级联清掉该作业的 `import_job_error` 行。
 
 ### `GET /api/jobs` / `GET /api/jobs/{id}`
 

@@ -14,6 +14,14 @@ use crate::error::{ApiError, ApiResult};
 
 pub const SCHEMA_SQL: &str = include_str!("../../migrations/0001_init.sql");
 
+/// 0002：`kind` 允许 `other`、`sha256` → `hash` + `hash_algo`、清库重导。
+///
+/// ⚠️ 这份脚本会**删掉全部资产数据**，只能执行一次，靠 `apply_migrations` 里的列存在性判断兜住。
+pub const MIGRATION_0002_SQL: &str = include_str!("../../migrations/0002_hash_blake3.sql");
+
+/// 当前 schema 版本（写进 `meta.schema_version`，仅供排查）。
+pub const SCHEMA_VERSION: &str = "2";
+
 /// 元数据键
 pub const META_INDEX_FINGERPRINT: &str = "index_fingerprint";
 pub const META_SCHEMA_VERSION: &str = "schema_version";
@@ -41,8 +49,9 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.execute_batch(SCHEMA_SQL)?;
+        apply_migrations(&conn)?;
         let db = Self { conn: Arc::new(Mutex::new(conn)), path };
-        db.set_meta(META_SCHEMA_VERSION, "1")?;
+        db.set_meta(META_SCHEMA_VERSION, SCHEMA_VERSION)?;
         Ok(db)
     }
 
@@ -107,6 +116,49 @@ impl Db {
     }
 }
 
+// ---------------------------------------------------------------- 迁移
+
+/// 把 schema 推进到最新版本。
+///
+/// 0001 用的是 `CREATE TABLE IF NOT EXISTS`，老库不会被它改写，所以 0002 单独按需执行：
+/// 以「asset 表里有没有 hash 列」作为「0002 已应用」的标记（0002 会清空资产数据，不能重复跑）。
+fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    if has_column(conn, "asset", "hash")? {
+        return Ok(());
+    }
+    // 重建 asset 表要 DROP 再 RENAME。外键开关只能在事务外切换（事务内设置是 no-op），
+    // 而 `Db::open` 一进来就把它打开了 —— 这里单独关一次，迁移完再打开。
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = (|| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0002_SQL) {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+        conn.execute_batch("COMMIT")
+    })();
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    result?;
+
+    // 迁移后自检：asset 表是重建出来的，任何悬空引用都应该在这里暴露出来。
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = stmt.query([])?;
+    if rows.next()?.is_some() {
+        tracing::warn!("迁移 0002 后 PRAGMA foreign_key_check 报告了悬空引用，请检查 asset 相关表");
+    }
+    Ok(())
+}
+
+/// 表里是否存在某列（SQLite 没有 `information_schema`，只能问 `pragma_table_info`）。
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let sql = format!(
+        "SELECT 1 FROM pragma_table_info('{}') WHERE name = ?1 LIMIT 1",
+        table.replace('\'', "''")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    stmt.exists([column])
+}
+
 // ---------------------------------------------------------------- 行结构
 
 #[derive(Debug, Clone)]
@@ -118,7 +170,10 @@ pub struct AssetRow {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub duration_ms: Option<i64>,
-    pub sha256: Option<String>,
+    /// 内容指纹（blake3）；>100MB 的文件只对前 100MB 求值
+    pub hash: Option<String>,
+    /// 指纹算法标识；迁移 0002 起恒为 `blake3`
+    pub hash_algo: String,
     pub nsfw: bool,
     pub added_at: String,
 }
@@ -133,7 +188,8 @@ impl AssetRow {
             width: row.get("width")?,
             height: row.get("height")?,
             duration_ms: row.get("duration_ms")?,
-            sha256: row.get("sha256")?,
+            hash: row.get("hash")?,
+            hash_algo: row.get("hash_algo")?,
             nsfw: row.get::<_, i64>("nsfw")? != 0,
             added_at: row.get("added_at")?,
         })

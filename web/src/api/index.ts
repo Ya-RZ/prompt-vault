@@ -15,7 +15,9 @@ export {
   getSimilarAssets,
   listAssets,
   updateAssetMeta,
+  uploadAsset,
 } from './assets';
+export { cleanupTags, deleteTag, listTags } from './tags';
 export {
   getSimilarPrompts,
   searchImageByAssetId,
@@ -28,6 +30,7 @@ export {
   cancelJob,
   createEncodeJob,
   createImportJob,
+  deleteJob,
   getJob,
   listJobErrors,
   listJobs,

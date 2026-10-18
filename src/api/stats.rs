@@ -56,21 +56,22 @@ pub async fn facets(req: &mut Request, depot: &mut Depot, res: &mut Response) ->
     let limit = req.query::<usize>("limit").unwrap_or(20).clamp(1, 200);
 
     let (source, items): (String, Vec<FacetItem>) = match key.as_str() {
-        "tag" => match state.vectors.facet("tags", limit, Some(assets_only())) {
-            Ok(hits) if !hits.is_empty() => (
-                "qdrant-facet".to_string(),
-                hits.into_iter().map(|(value, count)| FacetItem { value, count }).collect(),
-            ),
-            _ => (
-                "sql".to_string(),
-                state
-                    .db
-                    .count_by_tag(limit as i64)?
-                    .into_iter()
-                    .map(|CountItem { key, count }| FacetItem { value: key, count })
-                    .collect(),
-            ),
-        },
+        // tag 一律走**实时 SQL**（需求 7）。原来优先用 Qdrant 的 `facet()`，
+        // 而 facet 只看已 optimize 的段：详情页给资产加标签时 payload 刚落进 delta 段，
+        // 没 optimize 之前 facet 查不到，于是首页标签过滤器里看不到新标签。
+        // 走 SQLite 同时让计数口径和 `GET /api/tags` 的 `asset_count` 完全一致
+        // （Qdrant 只统计已编码的资产，未编码的资产标签会漏算）。
+        // 计数为 0 的标签（无人引用）不进过滤器，与 qdrant-facet 的语义保持一致。
+        "tag" => (
+            "sql".to_string(),
+            state
+                .db
+                .count_by_tag(limit as i64)?
+                .into_iter()
+                .filter(|CountItem { count, .. }| *count > 0)
+                .map(|CountItem { key, count }| FacetItem { value: key, count })
+                .collect(),
+        ),
         // kind 走 SQL：payload 里的 kind 是**点类型**（asset/prompt），
         // 页面要的是**媒体类型**（image/video），后者在 SQLite 里。
         "kind" => (

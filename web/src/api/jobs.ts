@@ -76,6 +76,14 @@ export function cancelJob(id: string, signal?: AbortSignal): Promise<Job> {
   return apiRequest<Job>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST', signal });
 }
 
+/** DELETE /api/jobs/{id} —— 仅 failed/succeeded/cancelled 可删；运行中返回 409 CONFLICT */
+export function deleteJob(id: string, signal?: AbortSignal): Promise<{ deleted: boolean }> {
+  return apiRequest<{ deleted: boolean }>(`/jobs/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal,
+  });
+}
+
 /** GET /api/jobs/{id}/errors —— 分页错误明细 */
 export async function listJobErrors(
   id: string,

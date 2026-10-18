@@ -8,6 +8,12 @@ export interface CoverImageProps {
   /** true 时用 CSS blur 模糊占位，点一下才显示（nsfw=true 的默认行为） */
   blurred?: boolean;
   onReveal?: () => void;
+  /**
+   * 封面高度比（height / width）。
+   * 传数值时按该比例占位 —— 瀑布流卡片靠它得到不同高度，
+   * 同时避免图片加载前高度塌陷造成 Masonry 重排抖动。不传则用 CSS 的 1:1。
+   */
+  aspectRatio?: number;
 }
 
 /**
@@ -17,7 +23,13 @@ export interface CoverImageProps {
  *   避免一次点击直接穿透到父级的「打开详情」。
  * - 加载失败/无地址：显示占位而不是碎图图标。
  */
-export function CoverImage({ src, alt, blurred = false, onReveal }: CoverImageProps) {
+export function CoverImage({
+  src,
+  alt,
+  blurred = false,
+  onReveal,
+  aspectRatio,
+}: CoverImageProps) {
   const [failed, setFailed] = useState(false);
   const showPlaceholder = !src || failed;
 
@@ -28,7 +40,11 @@ export function CoverImage({ src, alt, blurred = false, onReveal }: CoverImagePr
   };
 
   return (
-    <div className="pv-card-cover" onClick={handleClick}>
+    <div
+      className="pv-card-cover"
+      onClick={handleClick}
+      style={aspectRatio ? { aspectRatio } : undefined}
+    >
       {showPlaceholder ? (
         <div className="pv-blur-badge" style={{ background: '#fafafa', color: 'rgba(0,0,0,0.35)' }}>
           <FileImageOutlined style={{ fontSize: 22 }} />

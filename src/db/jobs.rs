@@ -193,6 +193,22 @@ impl Db {
         })
     }
 
+    /// 删除作业及其错误明细（需求 2：只删已结束的作业）。
+    ///
+    /// **状态校验不在这里做**：`DELETE /api/jobs/{id}` 需要按状态回 409，
+    /// 那个判断放在 handler 里，这里只负责落库。
+    /// `import_job_error.job_id` 带 `ON DELETE CASCADE`，但外键开关有可能被关掉，
+    /// 所以显式删一遍明细，避免留下孤儿错误行。
+    pub fn delete_job(&self, id: &str) -> ApiResult<bool> {
+        self.with_conn(|c| {
+            let tx = c.unchecked_transaction()?;
+            tx.execute("DELETE FROM import_job_error WHERE job_id = ?1", [id])?;
+            let removed = tx.execute("DELETE FROM import_job WHERE id = ?1", [id])?;
+            tx.commit()?;
+            Ok(removed > 0)
+        })
+    }
+
     /// 找出还在 running 的作业 id（用于取消/并发保护）。
     pub fn running_job_ids(&self) -> ApiResult<Vec<String>> {
         self.with_conn(|c| {

@@ -6,6 +6,7 @@ import { AssetsPage } from './pages/AssetsPage';
 import { JobsPage } from './pages/JobsPage';
 import { SearchPage } from './pages/SearchPage';
 import { StatsPage } from './pages/StatsPage';
+import { TagsPage } from './pages/TagsPage';
 
 function NotFoundPage() {
   const navigate = useNavigate();
@@ -23,13 +24,14 @@ function NotFoundPage() {
   );
 }
 
-/** 前端路由：/assets /search /jobs /stats（SPA，未知路径由后端回落 index.html） */
+/** 前端路由：/assets /tags /search /jobs /stats（SPA，未知路径由后端回落 index.html） */
 export default function App() {
   return (
     <Routes>
       <Route element={<AppLayout />}>
         <Route path="/" element={<Navigate to="/assets" replace />} />
         <Route path="/assets" element={<AssetsPage />} />
+        <Route path="/tags" element={<TagsPage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/stats" element={<StatsPage />} />

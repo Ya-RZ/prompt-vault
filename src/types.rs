@@ -66,7 +66,10 @@ pub struct AssetDto {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub duration_ms: Option<i64>,
-    pub sha256: Option<String>,
+    /// 内容指纹（blake3 十六进制）；>100MB 的文件只对前 100MB 求值
+    pub hash: Option<String>,
+    /// 指纹算法，恒为 `blake3`（前端按它判断要不要重新计算）
+    pub hash_algo: String,
     pub nsfw: bool,
     pub added_at: String,
     pub tags: Vec<String>,
@@ -399,7 +402,7 @@ pub struct ImportJobRequest {
     pub extensions: Option<Vec<String>>,
     #[serde(default)]
     pub default_prompt_role: Option<String>,
-    /// sha256 | rel_path | none
+    /// `none` 关闭 hash 去重；其余值（兼容旧的 `sha256` / `rel_path`）按 blake3 去重
     #[serde(default)]
     pub dedupe_by: Option<String>,
 }

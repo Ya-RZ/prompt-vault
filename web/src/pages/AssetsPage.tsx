@@ -1,9 +1,17 @@
-import { AppstoreOutlined, ReloadOutlined, TableOutlined } from '@ant-design/icons';
 import {
+  AppstoreOutlined,
+  ReloadOutlined,
+  TableOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
+import {
+  App as AntdApp,
   Button,
   Card,
   Empty,
   Input,
+  Masonry,
+  Modal,
   Pagination,
   Segmented,
   Select,
@@ -11,22 +19,28 @@ import {
   Spin,
   Table,
   Tag,
-  Tooltip,
   Typography,
+  Upload,
   type TableProps,
+  type UploadProps,
 } from 'antd';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import {
+  describeError,
+  fetchFacets,
   listAssets,
+  uploadAsset,
   type Asset,
   type AssetKind,
   type AssetListResponse,
   type AssetSort,
+  type FacetsResponse,
   type TriState,
 } from '../api';
 import { AssetCard } from '../components/AssetCard';
 import { AssetDetailDrawer } from '../components/AssetDetailDrawer';
+import { AssetUploadModal } from '../components/AssetUploadModal';
 import { CoverImage } from '../components/CoverImage';
 import { ErrorState } from '../components/ErrorState';
 import { useAsync } from '../hooks/useAsync';
@@ -49,6 +63,19 @@ const TRI_OPTIONS: Array<{ value: TriState; label: string }> = [
   { value: 'false', label: '仅 false' },
 ];
 
+const KIND_OPTIONS: Array<{ value: AssetKind; label: string }> = [
+  { value: 'image', label: 'image' },
+  { value: 'video', label: 'video' },
+  { value: 'other', label: 'other' },
+];
+
+/**
+ * 瀑布流列数（需求 3：默认 4 列，随宽度变化）。
+ * AntD 的断点为 xs<576 / sm≥576 / md≥768 / lg≥992 / xl≥1200 / xxl≥1600，
+ * 对应到目标断点即：<600 约 1 列、<900 约 2 列、<1200 约 3 列、≥1200 4 列。
+ */
+const MASONRY_COLUMNS = { xs: 1, sm: 1, md: 2, lg: 3, xl: 4, xxl: 4, xxxl: 4 };
+
 /** 三态筛选的 options 生成器（保留 TRI_OPTIONS 供筛选器复用） */
 function triOptions(prefix: string) {
   return TRI_OPTIONS.map((option) => ({
@@ -57,11 +84,14 @@ function triOptions(prefix: string) {
   }));
 }
 
-/** /assets —— 资产库：筛选 + 网格/表格双视图 + 详情抽屉 */
+/** /assets —— 资产库：筛选 + 瀑布流/表格双视图 + 上传 + 详情抽屉 */
 export function AssetsPage() {
+  const { message } = AntdApp.useApp();
+
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
-  const [tags, setTags] = useState<string[]>([]);
+  /** 需求 7：tag 过滤器改为单选（原为多选 tags 模式） */
+  const [tag, setTag] = useState<string | undefined>(undefined);
   const [kind, setKind] = useState<AssetKind | undefined>(undefined);
   const [nsfw, setNsfw] = useState<TriState>('all');
   const [encoded, setEncoded] = useState<TriState>('all');
@@ -72,6 +102,12 @@ export function AssetsPage() {
   const [revealedIds, setRevealedIds] = useState<number[]>([]);
   const [openAssetId, setOpenAssetId] = useState<number | null>(null);
 
+  // 上传：uploadOpen 是选择文件的弹窗，metaOpen 是上传成功后填写信息的弹窗
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadedAsset, setUploadedAsset] = useState<Asset | null>(null);
+  const [metaOpen, setMetaOpen] = useState(false);
+
   const loader = useCallback(
     (signal: AbortSignal) =>
       listAssets(
@@ -79,7 +115,7 @@ export function AssetsPage() {
           page,
           page_size: pageSize,
           q: q || undefined,
-          tag: tags.length > 0 ? tags : undefined,
+          tag,
           kind,
           nsfw,
           encoded,
@@ -87,28 +123,79 @@ export function AssetsPage() {
         },
         signal,
       ),
-    [page, pageSize, q, tags, kind, nsfw, encoded, sort],
+    [page, pageSize, q, tag, kind, nsfw, encoded, sort],
   );
 
   const { data, error, loading, reload } = useAsync<AssetListResponse>(loader, [
     page,
     pageSize,
     q,
-    tags,
+    tag,
     kind,
     nsfw,
     encoded,
     sort,
   ]);
 
-  const items = data?.items ?? [];
+  // tag 选项来自 facets：详情页新增标签后重新拉一次即可出现（配合后端 facets 修复）
+  // limit=200：后端默认只返回前 20 个分桶，放大到上限避免新标签排不进过滤器
+  const facetsLoader = useCallback(
+    (signal: AbortSignal) => fetchFacets('tag', signal, 200),
+    [],
+  );
+  const { data: facets, reload: reloadFacets } = useAsync<FacetsResponse>(facetsLoader, []);
+
+  const tagOptions = useMemo(() => {
+    const options = (facets?.items ?? []).map((item) => ({
+      value: item.value,
+      label: `${item.value}（${item.count}）`,
+    }));
+    // 当前选中的标签可能已不在 facets 结果里（刚被删/刚新增），补一个占位避免显示空值
+    if (tag && !options.some((option) => option.value === tag)) {
+      options.unshift({ value: tag, label: tag });
+    }
+    return options;
+  }, [facets, tag]);
+
+  const items = useMemo(() => data?.items ?? [], [data]);
   const total = data?.total ?? 0;
 
-  const handleReveal = (id: number) => setRevealedIds((prev) => [...prev, id]);
+  const handleReveal = useCallback((id: number) => {
+    setRevealedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
+  const handleOpen = useCallback((asset: Asset) => setOpenAssetId(asset.id), []);
+
+  /** 列表数据变更（详情编辑 / 上传保存 / 删除）后，列表与 facet 一起刷新 */
+  const handleMutated = useCallback(() => {
+    reload();
+    reloadFacets();
+  }, [reload, reloadFacets]);
 
   const handleSearch = (value: string) => {
     setQ(value.trim());
     setPage(1);
+  };
+
+  /** 上传（multipart 字段 file）→ 202/201 拿到 AssetDto 后弹出填写信息表单 */
+  const handleUpload: UploadProps['customRequest'] = ({ file, onSuccess, onError }) => {
+    const selected = file as File;
+    setUploading(true);
+    uploadAsset(selected)
+      .then((created) => {
+        onSuccess?.(created);
+        setUploadedAsset(created);
+        setUploadOpen(false);
+        setMetaOpen(true);
+        // 资产已入库，先刷一次列表：用户即使跳过「填写信息」也能看到新资产
+        reload();
+      })
+      .catch((cause: unknown) => {
+        const presentation = describeError(cause);
+        message.error(`上传失败：${presentation.title}`);
+        onError?.(cause instanceof Error ? cause : new Error(presentation.title));
+      })
+      .finally(() => setUploading(false));
   };
 
   const columns: TableProps<Asset>['columns'] = [
@@ -120,25 +207,20 @@ export function AssetsPage() {
         <div style={{ width: 64 }}>
           <CoverImage
             src={record.thumb_url}
-            alt={record.rel_path}
+            alt="资产缩略图"
             blurred={record.nsfw && !revealedIds.includes(record.id)}
             onReveal={() => handleReveal(record.id)}
           />
         </div>
       ),
     },
-    { title: 'ID', dataIndex: 'id', width: 76 },
-    {
-      title: '路径',
-      dataIndex: 'rel_path',
-      ellipsis: true,
-      render: (value: string) => <Tooltip title={value}>{value}</Tooltip>,
-    },
     {
       title: '类型',
       dataIndex: 'kind',
       width: 90,
-      render: (value: AssetKind) => <Tag color={value === 'video' ? 'blue' : 'default'}>{value}</Tag>,
+      render: (value: AssetKind) => (
+        <Tag color={value === 'video' ? 'blue' : 'default'}>{value}</Tag>
+      ),
     },
     {
       title: '尺寸',
@@ -175,9 +257,9 @@ export function AssetsPage() {
           <Text type="secondary">—</Text>
         ) : (
           <Space size={4} wrap>
-            {(value ?? []).slice(0, 3).map((tag) => (
-              <Tag key={tag} color="processing">
-                {tag}
+            {(value ?? []).slice(0, 3).map((name) => (
+              <Tag key={name} color="processing">
+                {name}
               </Tag>
             ))}
             {(value ?? []).length > 3 ? <Text type="secondary">+{(value ?? []).length - 3}</Text> : null}
@@ -202,10 +284,30 @@ export function AssetsPage() {
     },
   ];
 
+  const masonryItems = useMemo(
+    () =>
+      items.map((asset) => ({
+        key: asset.id,
+        data: asset,
+        children: (
+          <AssetCard
+            asset={asset}
+            revealed={revealedIds.includes(asset.id)}
+            onReveal={handleReveal}
+            onOpen={handleOpen}
+          />
+        ),
+      })),
+    [items, revealedIds, handleReveal, handleOpen],
+  );
+
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Card size="small" variant="outlined" styles={{ body: { padding: 12 } }}>
         <Space size={8} wrap>
+          <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
+            上传
+          </Button>
           <Input.Search
             allowClear
             style={{ width: 260 }}
@@ -214,13 +316,19 @@ export function AssetsPage() {
             onChange={(event) => setQInput(event.target.value)}
             onSearch={handleSearch}
           />
+          {/* 需求 7：单选 tag 过滤器，选项来自 /api/stats/facets?key=tag */}
           <Select
-            mode="tags"
-            style={{ minWidth: 190 }}
-            placeholder="tag（可多个）"
-            value={tags}
-            onChange={setTags}
-            options={tags.map((tag) => ({ value: tag, label: tag }))}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            style={{ minWidth: 200 }}
+            placeholder="tag（单选）"
+            value={tag}
+            onChange={(value: string | undefined) => {
+              setTag(value);
+              setPage(1);
+            }}
+            options={tagOptions}
           />
           <Select
             allowClear
@@ -228,10 +336,7 @@ export function AssetsPage() {
             placeholder="kind"
             value={kind}
             onChange={setKind}
-            options={[
-              { value: 'image', label: 'image' },
-              { value: 'video', label: 'video' },
-            ]}
+            options={KIND_OPTIONS}
           />
           <Select
             style={{ width: 130 }}
@@ -255,11 +360,11 @@ export function AssetsPage() {
             value={view}
             onChange={(value) => setView(value as 'grid' | 'table')}
             options={[
-              { value: 'grid', icon: <AppstoreOutlined />, label: '网格' },
+              { value: 'grid', icon: <AppstoreOutlined />, label: '瀑布流' },
               { value: 'table', icon: <TableOutlined />, label: '表格' },
             ]}
           />
-          <Button icon={<ReloadOutlined />} onClick={reload} loading={loading}>
+          <Button icon={<ReloadOutlined />} onClick={handleMutated} loading={loading}>
             刷新
           </Button>
           <Text type="secondary">
@@ -276,20 +381,15 @@ export function AssetsPage() {
         </div>
       ) : items.length === 0 ? (
         <Card variant="outlined">
-          <Empty description="没有符合条件的资产。若后端还没有数据，可到「作业」页先执行一次导入。" />
+          <Empty description="没有符合条件的资产。可点「上传」直接添加，或到「作业」页执行一次导入。" />
         </Card>
       ) : view === 'grid' ? (
-        <div className="pv-grid">
-          {items.map((asset) => (
-            <AssetCard
-              key={asset.id}
-              asset={asset}
-              revealed={revealedIds.includes(asset.id)}
-              onReveal={handleReveal}
-              onOpen={(opened) => setOpenAssetId(opened.id)}
-            />
-          ))}
-        </div>
+        // 需求 3：AntD Masonry 瀑布流（antd 6.6.6 提供，无需 CSS columns 兜底）
+        <Masonry<Asset>
+          items={masonryItems}
+          columns={MASONRY_COLUMNS}
+          gutter={16}
+        />
       ) : (
         <Table<Asset>
           size="small"
@@ -298,7 +398,7 @@ export function AssetsPage() {
           dataSource={items}
           pagination={false}
           loading={loading}
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1100 }}
         />
       )}
 
@@ -316,11 +416,50 @@ export function AssetsPage() {
         style={{ textAlign: 'right' }}
       />
 
+      {/* 上传入口：拖拽到区域或点击选择文件（multipart 字段 file） */}
+      <Modal
+        open={uploadOpen}
+        title="上传资产"
+        footer={null}
+        onCancel={() => setUploadOpen(false)}
+        destroyOnHidden
+      >
+        <Upload.Dragger
+          name="file"
+          multiple={false}
+          maxCount={1}
+          showUploadList={false}
+          customRequest={handleUpload}
+          disabled={uploading}
+        >
+          <p className="ant-upload-drag-icon">
+            <UploadOutlined style={{ fontSize: 28 }} />
+          </p>
+          <p className="ant-upload-text">把文件拖到这里，或点击选择文件</p>
+          <p className="ant-upload-hint">上传成功后会弹出表单，填写标题、标签与提示词。</p>
+        </Upload.Dragger>
+        {uploading ? (
+          <div style={{ marginTop: 12, textAlign: 'center' }}>
+            <Space size={8}>
+              <Spin size="small" />
+              <Text type="secondary">上传中…</Text>
+            </Space>
+          </div>
+        ) : null}
+      </Modal>
+
+      <AssetUploadModal
+        asset={uploadedAsset}
+        open={metaOpen}
+        onClose={() => setMetaOpen(false)}
+        onSaved={handleMutated}
+      />
+
       <AssetDetailDrawer
         assetId={openAssetId}
         open={openAssetId !== null}
         onClose={() => setOpenAssetId(null)}
-        onMutated={reload}
+        onMutated={handleMutated}
       />
     </Space>
   );

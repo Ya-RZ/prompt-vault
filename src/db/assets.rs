@@ -8,7 +8,8 @@ use super::{now_rfc3339, AssetRow, Db, PromptRow, VectorStateRow};
 use crate::error::{ApiError, ApiResult};
 use crate::types::{AssetListQuery, CountItem};
 
-const ASSET_COLS: &str = "id, kind, rel_path, bytes, width, height, duration_ms, sha256, nsfw, added_at";
+const ASSET_COLS: &str =
+    "id, kind, rel_path, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at";
 
 impl Db {
     // ------------------------------------------------------------ 资产
@@ -22,20 +23,20 @@ impl Db {
         width: Option<i64>,
         height: Option<i64>,
         duration_ms: Option<i64>,
-        sha256: Option<&str>,
+        hash: Option<&str>,
     ) -> ApiResult<i64> {
         let now = now_rfc3339();
         self.with_conn(|c| {
             c.execute(
-                "INSERT INTO asset (kind, rel_path, bytes, width, height, duration_ms, sha256, nsfw, added_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)
+                "INSERT INTO asset (kind, rel_path, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'blake3', 0, ?8)
                  ON CONFLICT(rel_path) DO UPDATE SET
                      bytes = excluded.bytes,
                      width = COALESCE(excluded.width, asset.width),
                      height = COALESCE(excluded.height, asset.height),
                      duration_ms = COALESCE(excluded.duration_ms, asset.duration_ms),
-                     sha256 = COALESCE(excluded.sha256, asset.sha256)",
-                params![kind, rel_path, bytes, width, height, duration_ms, sha256, now],
+                     hash = COALESCE(excluded.hash, asset.hash)",
+                params![kind, rel_path, bytes, width, height, duration_ms, hash, now],
             )?;
             c.query_row("SELECT id FROM asset WHERE rel_path = ?1", [rel_path], |r| r.get(0))
         })
@@ -57,6 +58,20 @@ impl Db {
             let mut stmt =
                 c.prepare(&format!("SELECT {ASSET_COLS} FROM asset WHERE rel_path = ?1"))?;
             let mut rows = stmt.query_map([rel_path], AssetRow::from_row)?;
+            match rows.next() {
+                Some(r) => Ok(Some(r?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// 按内容指纹查（上传去重用）：同一份文件不重复建资产。
+    pub fn find_asset_by_hash(&self, hash: &str) -> ApiResult<Option<AssetRow>> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {ASSET_COLS} FROM asset WHERE hash = ?1 ORDER BY id ASC LIMIT 1"
+            ))?;
+            let mut rows = stmt.query_map([hash], AssetRow::from_row)?;
             match rows.next() {
                 Some(r) => Ok(Some(r?)),
                 None => Ok(None),
@@ -219,7 +234,7 @@ impl Db {
         width: Option<i64>,
         height: Option<i64>,
         duration_ms: Option<i64>,
-        sha256: Option<&str>,
+        hash: Option<&str>,
     ) -> ApiResult<()> {
         self.with_conn(|c| {
             c.execute(
@@ -227,9 +242,9 @@ impl Db {
                     width = COALESCE(?2, width),
                     height = COALESCE(?3, height),
                     duration_ms = COALESCE(?4, duration_ms),
-                    sha256 = COALESCE(?5, sha256)
+                    hash = COALESCE(?5, hash)
                  WHERE id = ?1",
-                params![id, width, height, duration_ms, sha256],
+                params![id, width, height, duration_ms, hash],
             )
             .map(|_| ())
         })
@@ -755,6 +770,96 @@ impl Db {
 
     pub fn asset_must_exist(&self, id: i64) -> ApiResult<AssetRow> {
         self.get_asset(id)?.ok_or_else(|| ApiError::not_found(format!("资产 {id} 不存在")))
+    }
+}
+
+// ---------------------------------------------------------------- 标签管理（需求 8）
+//
+// 只追加，不动上面既有函数：`src/db/assets.rs` 同时有导入/哈希相关改动在进行。
+
+/// 标签页的一行：标签 + 被多少个资产引用。
+#[derive(Debug, Clone)]
+pub struct TagCountRow {
+    pub id: i64,
+    pub name: String,
+    pub asset_count: i64,
+}
+
+/// 删除单个标签的结果：让 handler 分别回 200 / 404 / 409。
+#[derive(Debug, Clone)]
+pub enum TagDeleteOutcome {
+    Deleted,
+    NotFound,
+    /// 仍有这么多资产引用着它
+    InUse(i64),
+}
+
+impl Db {
+    /// 标签列表（`GET /api/tags`）：引用数降序、同名升序分页。
+    ///
+    /// `q` 是名称子串过滤（LIKE，通配符已转义）；`None`/空串表示不过滤。
+    /// 总数在分页**之前**统计，供前端显示 `total`。
+    pub fn list_tags_with_counts(
+        &self,
+        limit: i64,
+        offset: i64,
+        q: Option<&str>,
+    ) -> ApiResult<(Vec<TagCountRow>, i64)> {
+        let pattern = q.map(str::trim).filter(|s| !s.is_empty()).map(|s| format!("%{}%", escape_like(s)));
+        self.with_conn(|c| {
+            let total: i64 = c.query_row(
+                "SELECT COUNT(*) FROM tag t WHERE (?1 IS NULL OR t.name LIKE ?1 ESCAPE '\\')",
+                params![pattern],
+                |r| r.get(0),
+            )?;
+            let mut stmt = c.prepare(
+                "SELECT t.id, t.name, COUNT(at.asset_id) AS asset_count
+                   FROM tag t
+                   LEFT JOIN asset_tag at ON at.tag_id = t.id
+                  WHERE (?1 IS NULL OR t.name LIKE ?1 ESCAPE '\\')
+                  GROUP BY t.id, t.name
+                  ORDER BY asset_count DESC, t.name ASC
+                  LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = stmt.query_map(params![pattern, limit, offset], |r| {
+                Ok(TagCountRow { id: r.get(0)?, name: r.get(1)?, asset_count: r.get(2)? })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok((out, total))
+        })
+    }
+
+    /// 删除一个标签，但只在它没有任何资产引用时真的删（`DELETE /api/tags/{id}`）。
+    ///
+    /// 「存在性 / 引用数 / 删除」放在同一个事务里，避免检查完再被引用上。
+    pub fn delete_tag_if_unused(&self, id: i64) -> ApiResult<TagDeleteOutcome> {
+        use rusqlite::OptionalExtension;
+        self.with_conn(|c| {
+            let tx = c.unchecked_transaction()?;
+            let name: Option<String> =
+                tx.query_row("SELECT name FROM tag WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+            if name.is_none() {
+                return Ok(TagDeleteOutcome::NotFound);
+            }
+            let used: i64 =
+                tx.query_row("SELECT COUNT(*) FROM asset_tag WHERE tag_id = ?1", [id], |r| r.get(0))?;
+            if used > 0 {
+                return Ok(TagDeleteOutcome::InUse(used));
+            }
+            tx.execute("DELETE FROM tag WHERE id = ?1", [id])?;
+            tx.commit()?;
+            Ok(TagDeleteOutcome::Deleted)
+        })
+    }
+
+    /// 清理所有「没有任何资产引用」的标签，返回删掉的行数（`POST /api/tags/cleanup`）。
+    pub fn delete_unused_tags(&self) -> ApiResult<usize> {
+        self.with_conn(|c| {
+            c.execute("DELETE FROM tag WHERE id NOT IN (SELECT tag_id FROM asset_tag)", [])
+        })
     }
 }
 

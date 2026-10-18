@@ -10,7 +10,14 @@ import type {
   UpdateAssetMetaRequest,
 } from './types';
 
-/** GET /api/assets —— 分页 + q/tag/kind/nsfw/encoded 筛选 + sort */
+/** POST /api/assets/upload —— multipart 字段固定为 `file`，201 返回新建的 AssetDto */
+export function uploadAsset(file: File, signal?: AbortSignal): Promise<Asset> {
+  const formData = new FormData();
+  formData.append('file', file, file.name);
+  return apiRequest<Asset>('/assets/upload', { method: 'POST', formData, signal });
+}
+
+/** GET /api/assets —— 分页 + q/tag/kind/nsfw/encoded 筛选 + sort（tag 单选） */
 export function listAssets(query: AssetListQuery, signal?: AbortSignal): Promise<AssetListResponse> {
   return apiRequest<AssetListResponse>('/assets', {
     query: {

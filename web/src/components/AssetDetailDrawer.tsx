@@ -62,7 +62,7 @@ function SimilarGrid({ items }: { items: SearchHit[] }) {
             onReveal={() => setRevealed((prev) => [...prev, hit.asset.id])}
           />
           <div className="pv-meta-line" style={{ marginTop: 4 }} title={hit.asset.rel_path}>
-            #{hit.asset.id} {hit.asset.rel_path}
+            {hit.asset.rel_path}
           </div>
           <div className="pv-meta-line">score {hit.score?.toFixed(4) ?? '—'}</div>
         </div>
@@ -271,12 +271,12 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
             ),
           },
           {
-            key: 'sha256',
-            label: 'SHA256',
+            key: 'hash',
+            label: `哈希（${asset.hash_algo ?? 'blake3'}）`,
             span: 2,
             children: (
-              <Text className="pv-pre" copyable={{ text: asset.sha256 ?? '' }}>
-                {asset.sha256 ?? '—'}
+              <Text className="pv-pre" copyable={{ text: asset.hash ?? '' }}>
+                {asset.hash ?? '—'}
               </Text>
             ),
           },

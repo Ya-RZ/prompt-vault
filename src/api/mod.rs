@@ -10,6 +10,8 @@ pub mod maintenance;
 pub mod media;
 pub mod search;
 pub mod stats;
+pub mod tags;
+pub mod upload;
 
 use std::sync::Arc;
 
@@ -98,6 +100,8 @@ pub fn build_router() -> Router {
                 .push(
                     Router::with_path("assets")
                         .get(assets::list_assets)
+                        // 需求 1：单图上传。必须排在 `{id}` 前面，Salvo 按注册顺序匹配
+                        .push(Router::with_path("upload").post(upload::upload_asset))
                         .push(
                             Router::with_path("{id}")
                                 .get(assets::get_asset)
@@ -129,11 +133,19 @@ pub fn build_router() -> Router {
                         .push(
                             Router::with_path("{id}")
                                 .get(jobs::get_job)
+                                .delete(jobs::delete_job)
                                 .push(Router::with_path("errors").get(jobs::job_errors))
                                 .push(Router::with_path("pause").post(jobs::pause_job))
                                 .push(Router::with_path("resume").post(jobs::resume_job))
                                 .push(Router::with_path("cancel").post(jobs::cancel_job)),
                         ),
+                )
+                .push(
+                    // 需求 8：标签管理。`cleanup` 是字面量路由，注册在 `{id}` 之前更稳妥
+                    Router::with_path("tags")
+                        .get(tags::list_tags)
+                        .push(Router::with_path("cleanup").post(tags::cleanup_tags))
+                        .push(Router::with_path("{id}").delete(tags::delete_tag)),
                 )
                 .push(
                     Router::with_path("maintenance")

@@ -10,6 +10,7 @@ const { Text, Title } = Typography;
 
 const NAV_ITEMS = [
   { key: '/assets', label: '资产库' },
+  { key: '/tags', label: '标签' },
   { key: '/search', label: '搜索' },
   { key: '/jobs', label: '作业' },
   { key: '/stats', label: '统计' },

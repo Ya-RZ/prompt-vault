@@ -42,6 +42,8 @@ cudarc = { version = "0.19.8", default-features = false, optional = true, featur
 
 # --- 资产处理 ---
 image = "0.25"
+# 资产指纹统一用 blake3（迁移 0002 起；sha2 仍被 encode / 缩略图缓存用着，别删）
+blake3 = "1"
 sha2 = "0.10"
 hex = "0.4"
 walkdir = "2"

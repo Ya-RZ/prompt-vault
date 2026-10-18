@@ -22,9 +22,11 @@ pub struct ImportParams {
     /// 相对 media 目录的子路径；空串表示整个 media 目录
     pub root: String,
     pub recursive: bool,
+    /// 扩展名白名单（小写、不带点）。**空 = 不过滤**，任意类型都可导入（进 `other` 桶）。
     pub extensions: Vec<String>,
     pub default_prompt_role: String,
-    /// sha256 | rel_path | none
+    /// 去重开关：`none` 关闭 hash 去重；其余值（兼容旧请求里的 `sha256` / `rel_path`）一律按 blake3 去重。
+    /// 注意指纹无论如何都会算 —— 归档目标路径 `<hash 前两位>/<bucket>/` 依赖它。
     pub dedupe_by: String,
 }
 
@@ -33,14 +35,11 @@ impl Default for ImportParams {
         Self {
             root: String::new(),
             recursive: true,
-            extensions: vec![
-                "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "mp4", "webm", "mov", "mkv",
-            ]
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect(),
+            // 空 = 不过滤：图片/视频之外的扩展名会落到 `other` 桶（需求 §4 的三分桶）。
+            // 想只导入特定类型时，请求里显式传 extensions 即可。
+            extensions: Vec::new(),
             default_prompt_role: "caption".into(),
-            dedupe_by: "sha256".into(),
+            dedupe_by: HASH_ALGO.into(),
         }
     }
 }
@@ -181,11 +180,7 @@ async fn run_import(
         return;
     }
 
-    let scan_root = if params.root.trim().is_empty() {
-        state.cfg.media_dir.clone()
-    } else {
-        state.cfg.media_path(params.root.trim())
-    };
+    let scan_root = resolve_import_root(&params.root, &state.cfg.media_dir);
     if !scan_root.exists() {
         let msg = format!("扫描根目录不存在: {}", scan_root.display());
         let _ = state.db.add_job_error(&job_id, None, "NOT_FOUND", &msg);
@@ -193,7 +188,7 @@ async fn run_import(
         return;
     }
 
-    let mut files = match collect_files(&state, &scan_root, &params) {
+    let mut files = match collect_files(&scan_root, &params) {
         Ok(f) => f,
         Err(e) => {
             let _ = state.db.add_job_error(&job_id, None, "INTERNAL", &e.to_string());
@@ -201,7 +196,7 @@ async fn run_import(
             return;
         }
     };
-    files.sort();
+    files.sort_by(|a, b| a.label.cmp(&b.label));
 
     // 断点续传：cursor 之后的才算待办
     let job = match state.db.get_job(&job_id) {
@@ -210,7 +205,7 @@ async fn run_import(
     };
     let resume_from = job.cursor.clone();
     let start_idx = match &resume_from {
-        Some(cursor) => files.iter().position(|f| f > cursor).unwrap_or(files.len()),
+        Some(cursor) => files.iter().position(|f| &f.label > cursor).unwrap_or(files.len()),
         None => 0,
     };
     let remaining = &files[start_idx..];
@@ -221,35 +216,36 @@ async fn run_import(
     let mut skipped = job.skipped;
     let mut dirty = 0usize;
 
-    for rel_path in remaining {
+    for file in remaining {
         match check(&control) {
             Step::Cancel => {
-                let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(rel_path));
+                let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(&file.label));
                 let _ = state.db.set_job_status(&job_id, "cancelled", Some("已按请求取消"));
                 return;
             }
             Step::Pause => {
-                let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(rel_path));
+                let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(&file.label));
                 let _ = state.db.set_job_status(&job_id, "paused", Some("已暂停，可 resume 续跑"));
                 return;
             }
             Step::Continue => {}
         }
 
-        let abs = state.cfg.media_path(rel_path);
-        match import_one(&state, rel_path, &abs, &params) {
+        match import_one(state.as_ref(), &file.path, &file.label, &params) {
             Ok(ImportOutcome::Added) => done += 1,
             Ok(ImportOutcome::Skipped) => skipped += 1,
             Err(e) => {
                 failed += 1;
-                let _ = state.db.add_job_error(&job_id, Some(rel_path), e.code, &e.message);
-                let _ = state.db.set_job_status(&job_id, "running", Some(&format!("失败: {rel_path}")));
+                let _ = state.db.add_job_error(&job_id, Some(&file.label), e.code, &e.message);
+                let _ = state
+                    .db
+                    .set_job_status(&job_id, "running", Some(&format!("失败: {}", file.label)));
             }
         }
         dirty += 1;
         if dirty >= 20 {
             dirty = 0;
-            let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(rel_path));
+            let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(&file.label));
         }
     }
 
@@ -264,13 +260,13 @@ enum ImportOutcome {
 }
 
 fn import_one(
-    state: &Arc<AppState>,
-    rel_path: &str,
-    abs: &std::path::Path,
+    state: &AppState,
+    src: &std::path::Path,
+    label: &str,
     params: &ImportParams,
 ) -> ApiResult<ImportOutcome> {
-    let meta = std::fs::metadata(abs)
-        .map_err(|e| ApiError::bad_request(format!("读取文件失败: {e}")))?;
+    let meta = std::fs::metadata(src)
+        .map_err(|e| ApiError::bad_request(format!("读取文件失败 {label}: {e}")))?;
     if meta.len() > state.cfg.max_media_bytes {
         return Err(ApiError::payload_too_large(format!(
             "文件 {} 字节超过上限 {} 字节（开发文档 §12 第 8 条：按字节和像素双重设限）",
@@ -279,50 +275,237 @@ fn import_one(
         )));
     }
 
-    let is_video = is_video(rel_path);
-    let bytes = meta.len() as i64;
-    let (width, height, duration_ms) = if is_video {
-        (None, None, None)
-    } else {
-        match image::image_dimensions(abs) {
-            Ok((w, h)) => (Some(w as i64), Some(h as i64), None),
-            Err(e) => {
-                return Err(ApiError::bad_request(format!("不是可识别的图片: {e}")));
-            }
-        }
-    };
-
-    // 去重（sha256 需要读全文件，代价可控：导入本来就是 IO 密集）
-    let mut sha256 = None;
-    if params.dedupe_by == "sha256" {
-        let digest = sha256_file(abs)?;
-        if let Some(existing) = find_by_sha256(state, &digest)? {
-            if existing != rel_path {
-                return Ok(ImportOutcome::Skipped);
-            }
-        }
-        sha256 = Some(digest);
+    // 需求 4：源文件已经落在资产库（media 或其子目录）里 → 跳过，避免自己搬自己。
+    if is_inside_media(&state.cfg.media_dir, src) {
+        return Ok(ImportOutcome::Skipped);
     }
 
-    let kind = if is_video { "video" } else { "image" };
-    let id = state.db.insert_asset(
-        kind,
-        rel_path,
-        bytes,
-        width,
-        height,
-        duration_ms,
-        sha256.as_deref(),
-    )?;
-    let _ = state.db.set_asset_dimensions(id, width, height, duration_ms, sha256.as_deref());
+    // kind 先按扩展名判，图片再试着读尺寸；读不出尺寸的归到 other（迁移 0002 起允许）。
+    let (kind, width, height) = probe_kind(src);
+
+    // 需求 4/5：blake3（>100MB 只读前 100MB）。目标路径依赖它，所以**总要算**，
+    // 与 dedupe_by 无关；dedupe_by 只决定要不要拿它去库里查重。
+    let hash = blake3_file(src)?;
+    if params.dedupe_by != "none" && state.db.find_asset_by_hash(&hash)?.is_some() {
+        return Ok(ImportOutcome::Skipped);
+    }
+
+    let raw_name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_name = sanitize_file_name(&raw_name);
+    let rel = match pick_target_rel(state, &hash, &kind, &file_name)? {
+        TargetChoice::New(rel) => rel,
+        // 目标路径上已经是同一份内容（同 hash）→ 去重跳过
+        TargetChoice::Existing(_) => return Ok(ImportOutcome::Skipped),
+    };
+    let target = state.cfg.media_path(&rel);
+    move_file(src, &target)?;
+
+    let bytes = meta.len() as i64;
+    let id = state
+        .db
+        .insert_asset(&kind, &rel, bytes, width, height, None, Some(&hash))?;
+    let _ = state.db.set_asset_dimensions(id, width, height, None, Some(&hash));
     Ok(ImportOutcome::Added)
 }
 
+// ---------------------------------------------------------------- 归档路径 / 哈希
+
+/// 资产指纹算法（迁移 0002 起由 sha256 换成 blake3）。
+pub const HASH_ALGO: &str = "blake3";
+
+/// 大文件只对前 100MB 求哈希（需求 4）：库里可能混进几个 GB 的视频，
+/// 全量读一遍会让导入成倍变慢，而前 100MB 已经足够区分不同文件。
+pub const HASH_READ_LIMIT: u64 = 100 * 1024 * 1024;
+
+const VIDEO_EXTS: [&str; 8] = ["mp4", "webm", "mov", "mkv", "avi", "m4v", "flv", "wmv"];
+const IMAGE_EXTS: [&str; 9] = ["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tif", "tiff"];
+
+/// 算文件指纹：`<= 100MB` 读全文件；`> 100MB` 只读前 100MB。
+pub fn blake3_file(path: &std::path::Path) -> ApiResult<String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path)
+        .map_err(|e| ApiError::bad_request(format!("读取文件失败 {}: {e}", path.display())))?;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| ApiError::bad_request(format!("打开文件失败 {}: {e}", path.display())))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut remaining = meta.len().min(HASH_READ_LIMIT);
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = file
+            .read(&mut buf[..want])
+            .map_err(|e| ApiError::bad_request(format!("读取文件失败 {}: {e}", path.display())))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        remaining -= n as u64;
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// 目标分桶目录名：`media/<hash 前两位>/{image|video|other}/<文件名>`。
+pub fn bucket_of(kind: &str) -> &'static str {
+    match kind {
+        "image" => "image",
+        "video" => "video",
+        _ => "other",
+    }
+}
+
+/// 分桶后的相对路径（相对 media 根，统一用 `/`）。
+pub fn target_rel_path(hash: &str, kind: &str, file_name: &str) -> String {
+    let prefix = hash.get(..2).unwrap_or("00");
+    format!("{prefix}/{}/{}", bucket_of(kind), file_name)
+}
+
+/// 按扩展名 + 能否读出尺寸判定 kind；图片读不出尺寸的归到 `other`。
+pub fn probe_kind(path: &std::path::Path) -> (String, Option<i64>, Option<i64>) {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if VIDEO_EXTS.contains(&ext.as_str()) {
+        return ("video".into(), None, None);
+    }
+    if IMAGE_EXTS.contains(&ext.as_str()) {
+        return match image::image_dimensions(path) {
+            Ok((w, h)) => ("image".into(), Some(w as i64), Some(h as i64)),
+            Err(_) => ("other".into(), None, None),
+        };
+    }
+    ("other".into(), None, None)
+}
+
+/// 文件名清洗：去掉路径分隔符 / Windows 非法字符，保证能安全拼进目标目录。
+pub fn sanitize_file_name(raw: &str) -> String {
+    let base = std::path::Path::new(raw)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                || c.is_control()
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut name = cleaned.trim().trim_matches('.').to_string();
+    if name.is_empty() {
+        return "unnamed".to_string();
+    }
+    // 大多数文件系统的单段名字上限 255 字节；留出 "<hash8>-" 前缀与 UTF-8 多字节的余量
+    if name.chars().count() > 180 {
+        let (stem, ext) = match name.rfind('.') {
+            Some(i) => (name[..i].to_string(), name[i..].to_string()),
+            None => (name.clone(), String::new()),
+        };
+        let ext: String = ext.chars().take(20).collect();
+        let keep = 180usize.saturating_sub(ext.chars().count());
+        name = format!("{}{}", stem.chars().take(keep).collect::<String>(), ext);
+    }
+    name
+}
+
+/// 需求 4：原始文件**移动**进资产库 —— 同盘 rename，跨盘 copy + remove。
+pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> ApiResult<()> {
+    if src == dst {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ApiError::internal(format!("创建目录失败 {}: {e}", parent.display())))?;
+    }
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            // 跨卷（EXDEV）时 rename 一定失败，退化成 copy + remove
+            std::fs::copy(src, dst).map_err(|e| {
+                ApiError::internal(format!(
+                    "移动文件失败（rename: {rename_err}；copy: {e}）{} → {}",
+                    src.display(),
+                    dst.display()
+                ))
+            })?;
+            std::fs::remove_file(src).map_err(|e| {
+                ApiError::internal(format!("已复制但删除源文件失败 {}: {e}", src.display()))
+            })?;
+            Ok(())
+        }
+    }
+}
+
+/// 目标路径的选择结果。
+pub enum TargetChoice {
+    /// 目标路径没人占（新文件），调用方需要把源文件移动过去
+    New(String),
+    /// 目标路径上已经是同一份内容（同 hash），不必再搬
+    Existing(String),
+}
+
+/// 选目标相对路径：先试 `<文件名>`，被不同内容占用时改成 `<hash8>-<文件名>`。
+pub fn pick_target_rel(
+    state: &AppState,
+    hash: &str,
+    kind: &str,
+    file_name: &str,
+) -> ApiResult<TargetChoice> {
+    let candidates = [
+        target_rel_path(hash, kind, file_name),
+        target_rel_path(hash, kind, &format!("{}-{file_name}", hash.get(..8).unwrap_or(hash))),
+    ];
+    for rel in candidates {
+        let abs = state.cfg.media_path(&rel);
+        if !abs.exists() {
+            return Ok(TargetChoice::New(rel));
+        }
+        if abs.is_file() && blake3_file(&abs).map(|h| h == hash).unwrap_or(false) {
+            return Ok(TargetChoice::Existing(rel));
+        }
+    }
+    Err(ApiError::conflict(format!(
+        "目标位置已被不同内容的文件占用（{hash} / {file_name}），未覆盖"
+    )))
+}
+
+/// 判断某个路径是否落在资产库（media）或其子目录内。
+fn is_inside_media(media_dir: &std::path::Path, path: &std::path::Path) -> bool {
+    let media = std::fs::canonicalize(media_dir).unwrap_or_else(|_| media_dir.to_path_buf());
+    let candidate = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    candidate.starts_with(&media)
+}
+
+/// 导入根目录：绝对路径照用；相对路径以**当前可执行文件所在目录**为基准（需求 4，不是 cwd）。
+///
+/// 空串沿用旧语义 = 整个 media 目录；此时所有文件都在库里，会全部走「跳过」分支。
+pub fn resolve_import_root(raw: &str, media_dir: &std::path::Path) -> std::path::PathBuf {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return media_dir.to_path_buf();
+    }
+    let path = std::path::Path::new(trimmed);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let base = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join(path)
+}
+
+/// 扫描出来的一行：`label` 是相对扫描根的展示路径，同时用于 cursor 断点比较。
+struct FoundFile {
+    label: String,
+    path: std::path::PathBuf,
+}
+
 fn collect_files(
-    state: &Arc<AppState>,
     scan_root: &std::path::Path,
     params: &ImportParams,
-) -> ApiResult<Vec<String>> {
+) -> ApiResult<Vec<FoundFile>> {
     let exts: Vec<String> = params.extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
     let mut out = Vec::new();
     let walker = walkdir::WalkDir::new(scan_root).max_depth(if params.recursive { 64 } else { 1 });
@@ -335,51 +518,25 @@ fn collect_files(
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        if !exts.iter().any(|e| e == &ext) {
+        if !exts.is_empty() && !exts.iter().any(|e| e == &ext) {
             continue;
         }
-        let rel = crate::state::rel_display(path, &state.cfg.media_dir);
-        if rel.is_empty() {
+        // 隐藏文件与系统垃圾不导入（空扩展名白名单模式下尤其需要）
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with('.')
+            || name.eq_ignore_ascii_case("thumbs.db")
+            || name.eq_ignore_ascii_case("desktop.ini")
+        {
             continue;
         }
-        out.push(rel);
+        let label = crate::state::rel_display(path, scan_root);
+        if label.is_empty() {
+            continue;
+        }
+        out.push(FoundFile { label, path: path.to_path_buf() });
     }
+    out.sort_by(|a, b| a.label.cmp(&b.label));
     Ok(out)
-}
-
-fn is_video(rel_path: &str) -> bool {
-    let lower = rel_path.to_ascii_lowercase();
-    [".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"].iter().any(|e| lower.ends_with(e))
-}
-
-fn sha256_file(path: &std::path::Path) -> ApiResult<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| ApiError::bad_request(format!("打开文件失败: {e}")))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .map_err(|e| ApiError::bad_request(format!("读取文件失败: {e}")))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex::encode(hasher.finalize()))
-}
-
-fn find_by_sha256(state: &Arc<AppState>, digest: &str) -> ApiResult<Option<String>> {
-    state.db.with_conn(|c| {
-        c.query_row("SELECT rel_path FROM asset WHERE sha256 = ?1 LIMIT 1", [digest], |r| r.get(0))
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })
-    })
 }
 
 // ---------------------------------------------------------------- 编码

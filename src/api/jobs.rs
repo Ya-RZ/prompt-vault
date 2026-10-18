@@ -218,3 +218,26 @@ pub async fn cancel_job(req: &mut Request, depot: &mut Depot, res: &mut Response
     res.render(Json(job_action(&state, &id, "cancel").await?));
     Ok(())
 }
+
+/// 删除作业（需求 2）：只允许删**已结束**的作业（failed / succeeded / cancelled）。
+///
+/// pending / running / paused 一律 409，提示先取消——运行中的作业还在往库里写进度，
+/// 直接删行会让它后面的写入落空，所以在入口就拒绝。
+#[handler]
+pub async fn delete_job(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let id = req.param::<String>("id").ok_or_else(|| ApiError::bad_request("id 非法"))?;
+    let job = state
+        .db
+        .get_job(&id)?
+        .ok_or_else(|| ApiError::not_found(format!("作业 {id} 不存在")))?;
+    if !matches!(job.status.as_str(), "failed" | "succeeded" | "cancelled") {
+        return Err(ApiError::conflict(format!(
+            "作业状态为 {}，只有 failed / succeeded / cancelled 的作业可删除；请先取消该作业",
+            job.status
+        )));
+    }
+    let deleted = state.db.delete_job(&id)?;
+    res.render(Json(serde_json::json!({ "deleted": deleted })));
+    Ok(())
+}

@@ -181,9 +181,13 @@ export interface SizeResponse {
  * 4. 资产
  * ========================================================== */
 
-export type AssetKind = 'image' | 'video';
+/** kind 的 CHECK 允许 image/video/other（other 用于既非图片也非视频的上传文件） */
+export type AssetKind = 'image' | 'video' | 'other';
 export type TriState = 'true' | 'false' | 'all';
 export type AssetSort = 'added_at' | '-added_at' | 'id' | '-id' | 'bytes' | '-bytes';
+
+/** 内容哈希算法：2026-10 起由 sha256 换成 blake3（AssetDto.hash_algo） */
+export type HashAlgo = 'blake3';
 
 /** 资产内嵌的提示词（无 asset_id）；/api/prompts/{id}/similar 返回的带 asset_id */
 export interface Prompt {
@@ -211,7 +215,9 @@ export interface Asset {
   width: number | null;
   height: number | null;
   duration_ms: number | null;
-  sha256: string | null;
+  /** 内容哈希（原 sha256 字段已改名；算法见 hash_algo） */
+  hash: string | null;
+  hash_algo: HashAlgo;
   nsfw: boolean;
   added_at: string;
   tags: string[];
@@ -222,17 +228,20 @@ export interface Asset {
   thumb_url: string;
 }
 
-/** GET /api/assets 查询参数 */
+/** GET /api/assets 查询参数（tag 为单选：首页过滤器只允许一个标签） */
 export interface AssetListQuery {
   page?: number;
   page_size?: number;
   q?: string;
-  tag?: string[];
+  tag?: string;
   kind?: AssetKind;
   nsfw?: TriState;
   encoded?: TriState;
   sort?: AssetSort;
 }
+
+/** POST /api/assets/upload（multipart 字段 file）→ 201 + AssetDto */
+export type UploadAssetResponse = Asset;
 
 /** GET /api/assets → 分页资产 */
 export type AssetListResponse = Paged<Asset>;
@@ -260,6 +269,42 @@ export interface DeleteAssetResponse {
   id: number;
   vector_deleted: boolean;
   file_deleted: boolean;
+}
+
+/* ============================================================
+ * 4.1 标签（GET /api/tags 等）
+ * ========================================================== */
+
+/** 标签 + 引用它的资产数 */
+export interface TagItem {
+  id: number;
+  name: string;
+  asset_count: number;
+}
+
+/** GET /api/tags?page=&page_size=&q= —— 契约只保证 items/total，分页字段按需可选 */
+export interface TagListResponse {
+  items: TagItem[];
+  total: number;
+  page?: number;
+  page_size?: number;
+}
+
+/** GET /api/tags 查询参数 */
+export interface TagListQuery {
+  page?: number;
+  page_size?: number;
+  q?: string;
+}
+
+/** DELETE /api/tags/{id} → 200 {deleted:true}；仍有引用时后端返回 409 CONFLICT */
+export interface DeleteTagResponse {
+  deleted: boolean;
+}
+
+/** POST /api/tags/cleanup → 删掉的无引用标签行数 */
+export interface CleanupTagsResponse {
+  deleted: number;
 }
 
 /* ============================================================

@@ -29,6 +29,7 @@ import {
   cancelJob,
   createEncodeJob,
   createImportJob,
+  deleteJob,
   describeError,
   listJobErrors,
   listJobs,
@@ -235,6 +236,22 @@ export function JobsPage() {
     }
   };
 
+  /** 删除作业：仅 failed/succeeded/cancelled 可删，运行中后端返回 409 CONFLICT */
+  const handleDeleteJob = async (job: Job) => {
+    try {
+      await deleteJob(job.id);
+      message.success(`已删除作业 #${job.id}`);
+      reload();
+    } catch (cause) {
+      const presentation = describeError(cause);
+      if (presentation.code === 'CONFLICT') {
+        message.warning('该作业仍在运行或排队，请先取消后再删除');
+      } else {
+        message.error(`删除失败：${presentation.title}`);
+      }
+    }
+  };
+
   const handleCreateImport = async (values: ImportFormValues) => {
     setSubmitting(true);
     setSubmitError(null);
@@ -373,7 +390,7 @@ export function JobsPage() {
     {
       title: '操作',
       key: 'action',
-      width: 210,
+      width: 270,
       render: (_value, record) => (
         <Space size={4} wrap>
           {record.status === 'running' ? (
@@ -407,6 +424,22 @@ export function JobsPage() {
           >
             错误{record.failed > 0 ? `（${record.failed}）` : ''}
           </Button>
+          {record.status === 'failed' ||
+          record.status === 'succeeded' ||
+          record.status === 'cancelled' ? (
+            <Popconfirm
+              title="删除该作业记录？"
+              description="只删除作业与其错误明细，资产与文件不受影响。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => void handleDeleteJob(record)}
+            >
+              <Button size="small" danger type="link">
+                删除
+              </Button>
+            </Popconfirm>
+          ) : null}
         </Space>
       ),
     },
