@@ -161,6 +161,51 @@ jobs:
           Get-Content dist\SHA256SUMS
           Get-Item dist\prompt-vault-windows-x86_64-cuda.exe | Select-Object Name, Length
 
+      - name: 打包免安装版（exe + CUDA runtime DLL）
+        # nvcuda.dll 不打包：它是显卡驱动的一部分，随驱动安装，不能分发。
+        # 其余 CUDA runtime DLL 按通配符整包带上，避免因版本号变化漏文件。
+        run: |
+          $dist = "dist/portable"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item target\release\prompt-vault.exe $dist\
+
+          $cudaBin = Join-Path $env:CUDA_PATH "bin"
+          Write-Output "=== CUDA\bin 中 cublas/cudart/curand/nvrtc 相关 DLL ==="
+          $candidates = Get-ChildItem $cudaBin -Filter *.dll |
+            Where-Object { $_.Name -match '^(cublas|cublasLt|cudart|curand|nvrtc)' } |
+            Sort-Object Name
+          $candidates | ForEach-Object { Write-Output ("  {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)) }
+          $candidates | ForEach-Object { Copy-Item $_.FullName $dist\ }
+
+          # MSVC 运行时（目标机没装 VC++ Redist 时需要）
+          $vcRun = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+          foreach ($v in $vcRun) {
+            $hit = Get-ChildItem "C:\Windows\System32" -Filter $v -ErrorAction SilentlyContinue
+            if ($hit) { Copy-Item $hit.FullName $dist\ }
+          }
+
+          # 说明文件
+          @"
+          prompt-vault (Windows x86_64, CUDA)
+
+          直接运行：prompt-vault.exe
+          前置条件：机器需要安装 NVIDIA 显卡驱动（提供 nvcuda.dll），无需安装 CUDA Toolkit。
+
+          本目录已内含 CUDA runtime：cublas / cudart / curand / nvrtc。
+          编码模型需要单独准备，用 --model-dir 指向 Qwen3-VL-Embedding-2B 目录：
+            prompt-vault.exe --encoder candle --model-dir <模型目录>
+          "@ | Out-File -Encoding utf8 $dist\README.txt
+
+          $totalMB = [math]::Round(((Get-ChildItem $dist -File | Measure-Object Length -Sum).Sum / 1MB), 1)
+          Write-Output "=== portable 总大小: $totalMB MB ==="
+          Get-ChildItem $dist -File | Sort-Object Length -Descending | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
+
+          Compress-Archive -Path "$dist\*" -DestinationPath "dist/prompt-vault-windows-cuda-portable.zip" -CompressionLevel Optimal -Force
+          $zipMB = [math]::Round(((Get-Item "dist/prompt-vault-windows-cuda-portable.zip").Length / 1MB), 1)
+          Write-Output "=== zip 大小: $zipMB MB ==="
+          (Get-FileHash "dist/prompt-vault-windows-cuda-portable.zip" -Algorithm SHA256).Hash |
+            Out-File -Encoding ascii "dist/portable-SHA256SUMS"
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
@@ -168,4 +213,6 @@ jobs:
           path: |
             dist/prompt-vault-windows-x86_64-cuda.exe
             dist/SHA256SUMS
+            dist/prompt-vault-windows-cuda-portable.zip
+            dist/portable-SHA256SUMS
           if-no-files-found: error
