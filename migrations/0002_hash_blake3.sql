@@ -16,6 +16,9 @@ DELETE FROM prompt;
 DELETE FROM asset_tag;
 DELETE FROM asset;
 
+-- 防御：上一次迁移如果中途失败，可能留下 asset_new。先清掉再建。
+DROP TABLE IF EXISTS asset_new;
+
 CREATE TABLE asset_new (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT    NOT NULL CHECK (kind IN ('image', 'video', 'other')),
@@ -34,11 +37,10 @@ CREATE TABLE asset_new (
     added_at    TEXT    NOT NULL
 );
 
--- 数据已在上面的 DELETE 里清空；这条 INSERT ... SELECT 保留，是为了让
--- 「0001 建表 → 0002 迁移」与「旧库迁移」走完全相同的代码路径（此处必然 0 行）。
-INSERT INTO asset_new (id, kind, rel_path, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at)
-SELECT id, kind, rel_path, bytes, width, height, duration_ms, sha256, 'blake3', nsfw, added_at
-  FROM asset;
+-- 这里**不能**写 INSERT ... SELECT：源表在 0001 里列名是 sha256，在「已经跑过一次 0002」
+-- 的库里已经是 hash —— 统一引用任何一个名字都会在另一种状态下报
+-- `no such column: ...`。而上方的 DELETE 已经清空了数据，本来也没有行可搬
+-- （需求就是清库重导）。所以新表从空开始。
 
 DROP TABLE asset;
 ALTER TABLE asset_new RENAME TO asset;

@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS asset (
 CREATE INDEX IF NOT EXISTS idx_asset_added_at ON asset (added_at DESC);
 CREATE INDEX IF NOT EXISTS idx_asset_kind     ON asset (kind);
 CREATE INDEX IF NOT EXISTS idx_asset_nsfw     ON asset (nsfw);
-CREATE INDEX IF NOT EXISTS idx_asset_sha256   ON asset (sha256);
+-- 注意：这里**不要**再建 sha256 索引。0001 每次启动都会执行（靠 IF NOT EXISTS 幂等），
+-- 而 0002 会把 asset 重建成 hash 结构；那时再对不存在的 sha256 列建索引会报
+-- `no such column: sha256`，导致所有已迁移的库都起不来。
 
 CREATE TABLE IF NOT EXISTS prompt (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
