@@ -29,6 +29,8 @@ pub struct EncodeOutcome {
     pub vision_tokens: Option<i64>,
     pub kind: Option<String>,
     pub fingerprint: String,
+    /// 预处理提示（图片被等比缩小等）。上层负责把它们带进检索响应的 warnings。
+    pub notices: Vec<String>,
 }
 
 pub struct EncoderClient {
@@ -223,6 +225,7 @@ fn mock_encode(item: &EmbedInputItem, dim: usize) -> EncodeOutcome {
         vision_tokens: item.image.as_ref().map(|_| 0),
         kind: Some(kind.to_string()),
         fingerprint: MOCK_FINGERPRINT.to_string(),
+        notices: Vec::new(),
     }
 }
 

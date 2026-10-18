@@ -41,6 +41,8 @@ pub struct Config {
     pub web_dir: PathBuf,
     /// 媒体文件大小上限（字节），超了直接拒（开发文档 §12 第 8 条）
     pub max_media_bytes: u64,
+    /// 图片宽高比上限（长边/短边）；超限直接拒绝编码（0 表示不检查）
+    pub max_aspect_ratio: f64,
 }
 
 impl Config {
@@ -135,6 +137,7 @@ impl AppState {
                         dtype,
                         crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
                         cfg.max_media_bytes,
+                        cfg.max_aspect_ratio,
                     )))
                 }
                 Err(e) => {

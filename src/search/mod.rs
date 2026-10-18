@@ -178,6 +178,7 @@ impl<'a> Engine<'a> {
                         vision_tokens: None,
                         kind: Some("image".into()),
                         fingerprint: self.state.encoder.fingerprint_hint(),
+                        notices: Vec::new(),
                     },
                     QueryImageInfo { resized: None, vision_tokens: None },
                 ),
@@ -188,6 +189,7 @@ impl<'a> Engine<'a> {
                     ));
                     let data_url = self.read_media_as_data_url(&asset.rel_path)?;
                     let outcome = self.encode_image(data_url).await?;
+                    warnings.extend(outcome.notices.iter().cloned());
                     let info = QueryImageInfo {
                         resized: outcome.resized.clone(),
                         vision_tokens: outcome.vision_tokens,
@@ -197,6 +199,7 @@ impl<'a> Engine<'a> {
             }
         } else if let Some(data_url) = image_data_url {
             let outcome = self.encode_image(data_url).await?;
+            warnings.extend(outcome.notices.iter().cloned());
             let info =
                 QueryImageInfo { resized: outcome.resized.clone(), vision_tokens: outcome.vision_tokens };
             (outcome, info)

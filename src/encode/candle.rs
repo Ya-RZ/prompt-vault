@@ -233,6 +233,8 @@ pub struct CandleEncoder {
     device_name: Option<String>,
     /// 单张图片的字节上限（与 `--max-media-bytes` 同一口径）
     max_media_bytes: u64,
+    /// 宽高比上限（长边/短边），超限直接拒绝编码；对应 `--max-aspect-ratio`
+    max_aspect_ratio: f64,
     /// 懒加载：第一次编码时才真正把权重 mmap 进来（2B 模型加载要几十秒）
     loaded: Mutex<Option<Arc<Qwen3VLEmbedding>>>,
 }
@@ -245,6 +247,7 @@ impl CandleEncoder {
         dtype: DType,
         device_spec: DeviceSpec,
         max_media_bytes: u64,
+        max_aspect_ratio: f64,
     ) -> Self {
         let (device, device_label, device_name) = resolve_device(device_spec);
         Self {
@@ -256,6 +259,7 @@ impl CandleEncoder {
             device_label,
             device_name,
             max_media_bytes,
+            max_aspect_ratio,
             loaded: Mutex::new(None),
         }
     }
@@ -363,6 +367,8 @@ impl CandleEncoder {
         let mut text_payloads: Vec<String> = Vec::new();
         let mut image_slots: Vec<usize> = Vec::new();
         let mut image_payloads: Vec<Vec<u8>> = Vec::new();
+        // 与 image_slots 同序的预处理提示（缩放等），用来回传给上层
+        let mut image_notices: Vec<Vec<String>> = Vec::new();
 
         for (idx, item) in input.iter().enumerate() {
             match (&item.text, &item.image) {
@@ -372,7 +378,11 @@ impl CandleEncoder {
                 }
                 (None, Some(image)) => {
                     image_slots.push(idx);
-                    image_payloads.push(decode_image_input(image, self.max_media_bytes)?);
+                    let raw = decode_image_input(image, self.max_media_bytes)?;
+                    // 比例检查（超限直接拒绝）+ 超尺寸等比缩小到安全区
+                    let prepared = preprocess_image(raw, self.max_aspect_ratio)?;
+                    image_payloads.push(prepared.bytes);
+                    image_notices.push(prepared.notices);
                 }
                 (Some(_), Some(_)) => {
                     return Err(ApiError::bad_request(
@@ -404,6 +414,7 @@ impl CandleEncoder {
                     vision_tokens: None,
                     kind: Some("text".to_string()),
                     fingerprint: fingerprint.clone(),
+                    notices: Vec::new(),
                 });
             }
         }
@@ -413,7 +424,7 @@ impl CandleEncoder {
             let vectors = encoder
                 .embed_image_bytes(&refs)
                 .map_err(|e| ApiError::encoder_error(format!("candle 图片编码失败: {e}")))?;
-            for (slot, vector) in image_slots.iter().zip(vectors) {
+            for ((slot, vector), notices) in image_slots.iter().zip(vectors).zip(&image_notices) {
                 out[*slot] = Some(EncodeOutcome {
                     dense: vector,
                     sparse: None,
@@ -423,6 +434,7 @@ impl CandleEncoder {
                     vision_tokens: None,
                     kind: Some("image".to_string()),
                     fingerprint: fingerprint.clone(),
+                    notices: notices.clone(),
                 });
             }
         }
@@ -465,6 +477,72 @@ fn ensure_within_limit(len: u64, max_bytes: u64) -> ApiResult<()> {
         )));
     }
     Ok(())
+}
+
+/// 图片预处理的产物：可能是原 bytes（未改动），也可能是缩放后重新编码的 PNG。
+#[derive(Debug)]
+struct Preprocessed {
+    bytes: Vec<u8>,
+    notices: Vec<String>,
+}
+
+/// 编码前的图片预处理。
+///
+/// 1. **宽高比检查**：长边/短边超过 `max_aspect_ratio` 直接拒绝（400）。
+///    极端长条会被切出大量无效 patch，留给模型的几乎全是空白。
+/// 2. **超大图等比缩小**：像素数超过安全区（[`MAX_PIXELS`]）时按面积等比缩到安全区内。
+///
+/// 只读 header 拿尺寸：比例不合格的图（往往正是大文件）不需要全解码就能拒绝；
+/// 尺寸本来就在安全区内的图原样返回，解码仍交给 fastembed，避免重复解码。
+fn preprocess_image(bytes: Vec<u8>, max_aspect_ratio: f64) -> ApiResult<Preprocessed> {
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| ApiError::bad_request(format!("无法识别图片格式: {e}")))?
+        .into_dimensions()
+        .map_err(|e| ApiError::bad_request(format!("读取图片尺寸失败: {e}")))?;
+    if w == 0 || h == 0 {
+        return Err(ApiError::bad_request("图片宽或高为 0"));
+    }
+
+    let long = w.max(h) as f64;
+    let short = w.min(h) as f64;
+    let ratio = long / short;
+    if max_aspect_ratio > 0.0 && ratio > max_aspect_ratio {
+        return Err(ApiError::bad_request(format!(
+            "图片宽高比 {ratio:.1}:1 超过上限 {max_aspect_ratio:.1}:1（{w}×{h}）；\
+             极端长条会切出大量无效 patch，请先裁剪后重试"
+        ))
+        .with_detail(serde_json::json!({
+            "width": w,
+            "height": h,
+            "aspect_ratio": (ratio * 100.0).round() / 100.0,
+            "max_aspect_ratio": max_aspect_ratio,
+        })));
+    }
+
+    let pixels = w as u64 * h as u64;
+    if pixels <= MAX_PIXELS as u64 {
+        return Ok(Preprocessed { bytes, notices: Vec::new() });
+    }
+
+    // 超过安全区：解码 → 等比缩到 MAX_PIXELS 以内 → 重新编码成 PNG 交回去
+    let img = image::load_from_memory(&bytes)
+        .map_err(|e| ApiError::bad_request(format!("解码图片失败: {e}")))?;
+    let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
+    let nw = ((w as f64 * scale).round() as u32).max(1);
+    let nh = ((h as f64 * scale).round() as u32).max(1);
+    let scaled = img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3);
+    let mut out = Vec::new();
+    scaled
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| ApiError::internal(format!("重新编码图片失败: {e}")))?;
+
+    Ok(Preprocessed {
+        bytes: out,
+        notices: vec![format!(
+            "图片 {w}×{h}（{pixels} 像素）超过安全区 {MAX_PIXELS} 像素，已等比缩放到 {nw}×{nh}"
+        )],
+    })
 }
 
 /// 「强制离线」的进程级环境只设一次。
@@ -636,5 +714,67 @@ pub fn parse_dtype(name: &str) -> DType {
         "f16" | "float16" | "half" => DType::F16,
         "bf16" | "bfloat16" => DType::BF16,
         _ => DType::F32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = image::DynamicImage::new_rgb8(w, h);
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("生成测试 PNG");
+        out
+    }
+
+    fn dims(bytes: &[u8]) -> (u32, u32) {
+        image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .expect("识别格式")
+            .into_dimensions()
+            .expect("读取尺寸")
+    }
+
+    #[test]
+    fn rejects_extreme_aspect_ratio() {
+        // 4000x100 = 40:1，超过默认 8:1
+        let err = preprocess_image(png_bytes(4000, 100), 8.0).expect_err("应当拒绝");
+        assert_eq!(err.code, "BAD_REQUEST", "宽高比超限必须是 400");
+        assert!(err.message.contains("宽高比"), "错误信息要说明原因: {}", err.message);
+    }
+
+    #[test]
+    fn accepts_16_by_9() {
+        // 1280x720 = 1.78:1 且 92 万像素，在安全区内：既不拒绝也不缩放
+        let out = preprocess_image(png_bytes(1280, 720), 8.0).expect("16:9 不应被拒绝");
+        assert!(out.notices.is_empty(), "未超安全区不应有提示");
+    }
+
+    #[test]
+    fn downscales_oversized_image_into_safe_area() {
+        // 5400x3603 = 1945 万像素，远超 1,843,200
+        let pre = preprocess_image(png_bytes(5400, 3603), 8.0).expect("超大图应被缩小而不是报错");
+        assert_eq!(pre.notices.len(), 1);
+        assert!(pre.notices[0].contains("已等比缩放到"), "{}", pre.notices[0]);
+        let (w, h) = dims(&pre.bytes);
+        assert!(
+            w as u64 * h as u64 <= MAX_PIXELS as u64,
+            "缩放后 {w}x{h} 仍超过安全区"
+        );
+        // 比例要保住（容差按像素取整）
+        let before = 5400.0 / 3603.0;
+        let after = w as f64 / h as f64;
+        assert!((before - after).abs() < 0.01, "缩放应保持宽高比: {before} vs {after}");
+    }
+
+    #[test]
+    fn keeps_image_within_safe_area_untouched() {
+        let bytes = png_bytes(1024, 1024);
+        let len = bytes.len();
+        let pre = preprocess_image(bytes, 8.0).expect("安全区内不应改动");
+        assert!(pre.notices.is_empty());
+        assert_eq!(pre.bytes.len(), len, "安全区内的图应原样返回（不重新编码）");
     }
 }

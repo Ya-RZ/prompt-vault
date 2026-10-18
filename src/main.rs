@@ -64,6 +64,9 @@ struct Args {
     /// 单个媒体文件字节上限（开发文档 §12 第 8 条：按字节和像素双重设限）
     #[arg(long, env = "PV_MAX_MEDIA_BYTES", default_value_t = 268_435_456)]
     max_media_bytes: u64,
+    /// 图片宽高比上限（长边/短边，默认 8.0）；超过直接拒绝编码，0 表示不检查
+    #[arg(long, env = "PV_MAX_ASPECT_RATIO", default_value_t = 8.0)]
+    max_aspect_ratio: f64,
 }
 
 #[tokio::main]
@@ -123,6 +126,7 @@ async fn main() {
         max_length: args.max_length,
         web_dir: args.web_dir.clone(),
         max_media_bytes: args.max_media_bytes,
+        max_aspect_ratio: args.max_aspect_ratio,
     };
 
     let state = match AppState::new(cfg) {

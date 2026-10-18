@@ -455,6 +455,9 @@ async fn run_encode(
         match state.encoder.embed(items.clone()).await {
             Ok(outcomes) => {
                 for ((asset_id, rel_path), outcome) in rows.iter().zip(outcomes.iter()) {
+                    for notice in &outcome.notices {
+                        tracing::info!(asset_id = *asset_id, path = %rel_path, "{notice}");
+                    }
                     match store_asset_vector(&state, *asset_id, outcome) {
                         Ok(()) => done += 1,
                         Err(e) => {
@@ -471,6 +474,9 @@ async fn run_encode(
                         match state.encoder.embed(vec![item.clone()]).await {
                             Ok(mut outcomes) if !outcomes.is_empty() => {
                                 let outcome = outcomes.remove(0);
+                                for notice in &outcome.notices {
+                                    tracing::info!(asset_id = *asset_id, path = %rel_path, "{notice}");
+                                }
                                 match store_asset_vector(&state, *asset_id, &outcome) {
                                     Ok(()) => done += 1,
                                     Err(e) => {

@@ -66,6 +66,16 @@
 | 没有模型 | 启动照常（日志 warn）；`/api/health` → `DEGRADED`、`encoder.reachable=false`；**文本检索自动退化为纯词法**（`effective_mode="lexical"`，`warnings` 里说明）；`mode=dense` 与以图搜图返回 `ENCODER_UNREACHABLE` |
 | `--mock` | 不加载模型，向量由 sha256 派生（指纹 `mock\|dim=2048\|v1\|device=cpu`），仅用于链路验证 |
 
+#### 图片预处理（编码前）
+
+| 检查 | 条件 | 行为 |
+| --- | --- | --- |
+| 宽高比 | 长边/短边 > `--max-aspect-ratio`（默认 `8.0`，`0` 表示不检查） | **直接 `400 BAD_REQUEST`**，`detail` 带 `width/height/aspect_ratio/max_aspect_ratio` |
+| 像素数 | 宽×高 > `1,843,200`（`MAX_PIXELS`，与 preprocessor 口径一致） | 等比缩放至安全区后再编码；提示写进检索响应的 `warnings`，或作业日志 |
+| 尺寸在安全区 | 宽×高 ≤ `1,843,200` | 原样交给 fastembed，不重复解码 |
+
+只读文件头取尺寸：比例不合格的图（往往也是大文件）不需要整体解码就能拒绝。
+
 ### 1.3 硬规则（开发文档 §10 铁律 1、§9）
 
 1. 当前编码指纹落库为**索引指纹**（`meta` 表 `index_fingerprint`），第一次写入时钉住。
