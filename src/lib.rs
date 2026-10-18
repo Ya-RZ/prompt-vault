@@ -8,6 +8,7 @@ pub mod db;
 pub mod encode;
 pub mod error;
 pub mod jobs;
+pub mod paths;
 pub mod search;
 pub mod state;
 pub mod types;

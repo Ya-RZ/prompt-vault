@@ -483,17 +483,10 @@ fn is_inside_media(media_dir: &std::path::Path, path: &std::path::Path) -> bool 
 pub fn resolve_import_root(raw: &str, media_dir: &std::path::Path) -> std::path::PathBuf {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return media_dir.to_path_buf();
+        // 空 = 整个 media 目录；media_dir 可能是相对路径，按可执行文件目录解析
+        return crate::paths::absolute_from_exe(media_dir);
     }
-    let path = std::path::Path::new(trimmed);
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    let base = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join(path)
+    crate::paths::absolute_from_exe(std::path::Path::new(trimmed))
 }
 
 /// 扫描出来的一行：`label` 是相对扫描根的展示路径，同时用于 cursor 断点比较。
@@ -823,7 +816,12 @@ pub fn job_to_dto(job: &crate::db::JobRow, errors: Vec<crate::types::JobErrorDto
         id: job.id.clone(),
         kind: job.kind.clone(),
         status: job.status.clone(),
-        root: job.root.clone(),
+        // 库里存的是相对路径，这里现场拼成绝对路径返回（存储层不出现绝对路径）
+        root: job
+            .root
+            .as_deref()
+            .and_then(crate::paths::abs_from_stored)
+            .map(|p| p.display().to_string()),
         total: job.total,
         done: job.done,
         failed: job.failed,

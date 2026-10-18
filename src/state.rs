@@ -84,6 +84,15 @@ impl AppState {
         std::fs::create_dir_all(&cfg.export_dir)?;
 
         let db = Db::open(&cfg.db_path)?;
+        // 存储层不保留绝对路径：把历史作业的绝对 root 规范成相对形式（幂等）
+        if let Ok(n) = db.normalize_job_roots() {
+            if n > 0 {
+                tracing::info!(
+                    count = n,
+                    "已把历史作业里的绝对路径规范为相对路径（存储层不保留绝对路径）"
+                );
+            }
+        }
         // 进程重启后把残留的 running 作业标成 paused（断点续传，不假装在跑）
         if let Ok(n) = db.reconcile_jobs_on_start() {
             if n > 0 {

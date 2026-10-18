@@ -88,12 +88,24 @@ pub async fn create_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
     // 导入前金标闸门（§9.4）
     state.check_golden_gate()?;
 
+    // 存储里只放相对路径：先解析成绝对，再相对可执行文件目录；
+    // 跨盘等无法相对化的情况存空串（宁可不记，也不把绝对路径写进库）。
+    let abs_root = crate::jobs::resolve_import_root(&params.root, &state.cfg.media_dir);
+    let stored_root = crate::paths::relativize_to_exe(&abs_root).unwrap_or_default();
+    if stored_root.is_empty() {
+        tracing::warn!(
+            root = %params.root,
+            "导入源无法相对化（跨盘？）：库中不记录源路径，断点续跑时需要重新指定"
+        );
+    }
+    let mut stored_params = params.clone();
+    stored_params.root = stored_root.clone();
+    let params_json = serde_json::to_string(&stored_params).ok();
     let id = Uuid::new_v4().to_string();
-    let params_json = serde_json::to_string(&params).ok();
     state.db.create_job(
         &id,
         "import",
-        Some(if params.root.is_empty() { "" } else { params.root.as_str() }),
+        Some(stored_root.as_str()),
         params_json.as_deref(),
         state.index_fingerprint()?.as_deref(),
     )?;

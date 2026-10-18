@@ -77,6 +77,42 @@ impl Db {
 
     // ------------------------------------------------------------ meta
 
+    /// 把历史作业记录里的绝对路径规范成相对可执行文件目录的形式（幂等）。
+    ///
+    /// 存储层不应该出现绝对路径：整包搬数据目录到别的机器/盘符后，绝对路径会全部失效。
+    /// 无法相对化（Windows 跨盘）的记录置空，表示「源路径未记录」。
+    pub fn normalize_job_roots(&self) -> ApiResult<usize> {
+        self.with_conn(|c| {
+            let rows: Vec<(String, Option<String>, Option<String>)> = {
+                let mut stmt = c.prepare("SELECT id, root, params FROM import_job")?;
+                let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                mapped.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let mut changed = 0usize;
+            for (id, root, params) in rows {
+                let Some(root) = root else { continue };
+                if root.trim().is_empty() || !std::path::Path::new(&root).is_absolute() {
+                    continue;
+                }
+                let stored = crate::paths::relativize_to_exe(std::path::Path::new(&root))
+                    .unwrap_or_default();
+                let new_params = params.map(|raw| match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(mut v) => {
+                        v["root"] = serde_json::Value::String(stored.clone());
+                        serde_json::to_string(&v).unwrap_or(raw)
+                    }
+                    Err(_) => raw,
+                });
+                c.execute(
+                    "UPDATE import_job SET root = ?1, params = ?2 WHERE id = ?3",
+                    rusqlite::params![stored, new_params, id],
+                )?;
+                changed += 1;
+            }
+            Ok(changed)
+        })
+    }
+
     pub fn get_meta(&self, key: &str) -> ApiResult<Option<String>> {
         self.with_conn(|c| {
             c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
