@@ -35,8 +35,9 @@ export interface AssetCardProps {
 /**
  * 资产库瀑布流卡片。
  *
- * NSFW 交互（需求 6）：模糊态下点击卡片**任何位置**都只解除模糊，不打开详情；
- * 解除之后再点卡片或信息区才进详情抽屉。
+ * 点击行为（需求 6）：
+ * - **点图片**：NSFW 未揭示时只解除模糊；已揭示或非 NSFW 时打开详情
+ * - **点图片下方的信息区**（提示词/尺寸/标签）：直接打开详情，与模糊状态无关
  * 卡片上不展示资产 id 与文件路径（需求 3）。
  */
 export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps) {
@@ -50,78 +51,76 @@ export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps)
       hoverable
       variant="outlined"
       styles={{ body: { padding: 10 } }}
-      onClick={() => {
-        // 第一次点击只负责解除模糊，避免误触直接打开详情
-        if (blurred) {
-          onReveal(asset.id);
-          return;
-        }
-        onOpen(asset);
-      }}
       cover={
-        <CoverImage
-          src={asset.thumb_url}
-          alt="资产缩略图"
-          blurred={blurred}
-          aspectRatio={coverRatio(asset)}
-          onReveal={() => onReveal(asset.id)}
-        />
+        // 图片区：模糊态由 CoverImage 拦截点击（stopPropagation）并解除模糊；
+        // 其余情况冒泡到这里打开详情。
+        <div onClick={() => onOpen(asset)}>
+          <CoverImage
+            src={asset.thumb_url}
+            alt="资产缩略图"
+            blurred={blurred}
+            aspectRatio={coverRatio(asset)}
+            onReveal={() => onReveal(asset.id)}
+          />
+        </div>
       }
     >
-      {firstPrompt ? (
-        <Tooltip title={firstPrompt}>
-          <div className="pv-meta-line" style={{ color: 'rgba(0,0,0,0.75)', fontWeight: 500 }}>
-            {firstPrompt}
-          </div>
-        </Tooltip>
-      ) : null}
-
-      <div className="pv-meta-line" style={{ marginTop: 4 }}>
-        {formatBytes(asset.bytes)}
-        {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ''}
-      </div>
-
-      <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        {asset.kind === 'video' ? (
-          <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-            视频
-          </Tag>
-        ) : asset.kind === 'other' ? (
-          <Tag style={{ marginInlineEnd: 0 }}>其他</Tag>
+      <div onClick={() => onOpen(asset)} style={{ cursor: 'pointer' }}>
+        {firstPrompt ? (
+          <Tooltip title={firstPrompt}>
+            <div className="pv-meta-line" style={{ color: 'rgba(0,0,0,0.75)', fontWeight: 500 }}>
+              {firstPrompt}
+            </div>
+          </Tooltip>
         ) : null}
-        <Tag color={asset.vector?.encoded ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>
-          {asset.vector?.encoded ? '已编码' : '未编码'}
-        </Tag>
-        {asset.nsfw ? (
-          <Tag color="red" style={{ marginInlineEnd: 0 }}>
-            NSFW
-          </Tag>
-        ) : null}
-        {(asset.prompts?.length ?? 0) > 1 ? (
-          <Tag style={{ marginInlineEnd: 0 }}>{asset.prompts.length} 提示词</Tag>
-        ) : null}
-      </div>
 
-      {tags.length > 0 ? (
+        <div className="pv-meta-line" style={{ marginTop: 4 }}>
+          {formatBytes(asset.bytes)}
+          {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ''}
+        </div>
+
         <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {tags.slice(0, MAX_CARDS_TAGS).map((tag) => (
-            <Tag key={tag} color="processing" style={{ marginInlineEnd: 0 }}>
-              {tag}
+          {asset.kind === 'video' ? (
+            <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+              视频
             </Tag>
-          ))}
-          {tags.length > MAX_CARDS_TAGS ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              +{tags.length - MAX_CARDS_TAGS}
-            </Text>
+          ) : asset.kind === 'other' ? (
+            <Tag style={{ marginInlineEnd: 0 }}>其他</Tag>
+          ) : null}
+          <Tag color={asset.vector?.encoded ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>
+            {asset.vector?.encoded ? '已编码' : '未编码'}
+          </Tag>
+          {asset.nsfw ? (
+            <Tag color="red" style={{ marginInlineEnd: 0 }}>
+              NSFW
+            </Tag>
+          ) : null}
+          {(asset.prompts?.length ?? 0) > 1 ? (
+            <Tag style={{ marginInlineEnd: 0 }}>{asset.prompts.length} 提示词</Tag>
           ) : null}
         </div>
-      ) : null}
 
-      <Tooltip title={formatDateTime(asset.added_at)}>
-        <div className="pv-meta-line" style={{ marginTop: 6 }}>
-          {formatDateTime(asset.added_at)}
-        </div>
-      </Tooltip>
+        {tags.length > 0 ? (
+          <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {tags.slice(0, MAX_CARDS_TAGS).map((tag) => (
+              <Tag key={tag} color="processing" style={{ marginInlineEnd: 0 }}>
+                {tag}
+              </Tag>
+            ))}
+            {tags.length > MAX_CARDS_TAGS ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                +{tags.length - MAX_CARDS_TAGS}
+              </Text>
+            ) : null}
+          </div>
+        ) : null}
+
+        <Tooltip title={formatDateTime(asset.added_at)}>
+          <div className="pv-meta-line" style={{ marginTop: 6 }}>
+            {formatDateTime(asset.added_at)}
+          </div>
+        </Tooltip>
+      </div>
     </Card>
   );
 }
