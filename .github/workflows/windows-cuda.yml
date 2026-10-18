@@ -129,27 +129,28 @@ jobs:
           }
 
       - name: 校验产物（不运行）
-        # 为什么不在 CI 里跑：CUDA 版的 import 表里有 `nvcuda.dll`，那是 **NVIDIA 驱动**
-        # 提供的库。GitHub 的 runner 没有显卡，这个 DLL 根本不存在，exe 会以
-        # 0xC0000135 (STATUS_DLL_NOT_FOUND) 直接退出 —— 不是程序坏了，是物理限制。
-        # 所以这里只做静态校验：产物存在、体积合理、CUDA driver 确实链进去了。
+        # 不在 CI 里运行：CUDA 版 exe 的 import 表里有 nvcuda.dll（NVIDIA 驱动提供），
+        # runner 无显卡，启动必然 0xC0000135。这是物理限制，不是缺陷。
+        # 校验只做与「链接方式」无关的检查 —— CUDA 12.4 时 nvcuda.dll 静态出现在
+        # import 表，CUDA 13.2 下 cudarc 改成动态加载就没了，写死具体 DLL 会误报。
         run: |
           $exe = ".\target\release\prompt-vault.exe"
           if (-Not (Test-Path $exe)) { throw "产物不存在" }
-          $size = (Get-Item $exe).Length
-          Write-Output ("产物大小: {0:N1} MB" -f ($size / 1MB))
-          if ($size -lt 5MB) { throw "产物异常偏小（$size bytes），疑似构建不完整" }
 
-          $deps = (dumpbin /DEPENDENTS $exe 2>$null) -join "`n"
-          # 实测 import 表是 nvcuda(driver API) + curand + cublas；
-          # candle 走 driver API，并不直接链 cudart，所以别把 cudart 写进必查项。
-          foreach ($must in @("nvcuda.dll", "cublas", "curand")) {
-            if ($deps -notmatch [regex]::Escape($must)) {
-              throw "产物未链接 $must —— CUDA 可能没真正启用"
-            }
-          }
-          Write-Output "✓ 产物存在、体积正常、CUDA driver 已链接"
-          Write-Output "说明：该 exe 运行时需要 NVIDIA 驱动（nvcuda.dll）与 CUDA runtime（cudart/curand/cublas）。"
+          $size = (Get-Item $exe).Length
+          $sizeMB = [math]::Round($size / 1MB, 1)
+          Write-Output "产物大小: $sizeMB MB"
+          # CPU 版约 38MB；CUDA 版（无论 12.4/13.2）实测都 ~54MB
+          if ($size -lt 40MB) { throw "产物偏小（$sizeMB MB），疑似 CUDA 未真正启用" }
+
+          $headers = (dumpbin /HEADERS $exe 2>$null) -join "`n"
+          if ($headers -notmatch "machine \(x64\)") { throw "产物不是 x64 PE" }
+          if ($headers -notmatch "PE32\+") { throw "产物不是 64 位 PE" }
+          Write-Output "✓ PE32+ x64，体积符合 CUDA 版特征"
+
+          # import 表仅供记录（不做硬性断言，避免因链接方式变化误报）
+          Write-Output "=== import 表（仅记录） ==="
+          dumpbin /DEPENDENTS $exe 2>$null | Select-String "\.dll" | ForEach-Object { $_.Line.Trim() } | Select-Object -Unique
 
       - name: 收集产物
         run: |
