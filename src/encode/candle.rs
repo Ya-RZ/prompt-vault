@@ -608,6 +608,32 @@ fn install_hf_env(hf_home: &Path) {
 ///
 /// 为什么不直接改原文件：那是原始下载的模型目录，改动它会破坏离线基线；
 /// 改写只作用在我们自己的缓存副本上。
+/// 启动自检：如果模型目录里**原始** `preprocessor_config.json` 的 `max_pixels`
+/// 与当前生效值不同，提示一句 —— 那个值不生效，真正生效的是缓存副本里的值。
+///
+/// 为什么要提示：手工去改模型目录里的配置是很自然的想法，但 fastembed 读的是
+/// `HF_HOME` 缓存里的副本，改了原文件不会有任何效果，也不会有报错。
+pub fn warn_if_max_pixels_overridden(model_dir: &Path, max_pixels: u64) {
+    let path = model_dir.join("preprocessor_config.json");
+    let Ok(raw) = std::fs::read(&path) else {
+        return;
+    };
+    let Ok(cfg) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let original = cfg.get("max_pixels").and_then(|v| v.as_u64());
+    if original != Some(max_pixels) {
+        tracing::warn!(
+            original = ?original,
+            effective = max_pixels,
+            "模型目录里 preprocessor_config.json 的 max_pixels={:?} 不会生效；\
+             实际口径由 --max-pixels={}（写在 HF 缓存副本里）决定",
+            original,
+            max_pixels
+        );
+    }
+}
+
 /// 缓存副本里的 max_pixels / min_pixels 是否已经等于期望值。
 /// 读不出来（不存在、损坏）一律视为不一致，让它重写。
 fn config_matches(path: &Path, max_pixels: u64) -> bool {

@@ -132,6 +132,7 @@ impl AppState {
                         max_length = cfg.max_length,
                         "candle 后端已配置（权重将在首次编码时加载）"
                     );
+                    crate::encode::candle::warn_if_max_pixels_overridden(&model_dir, cfg.max_pixels);
                     Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
                         model_dir,
                         crate::encode::candle::CandleOptions {
