@@ -152,9 +152,9 @@ export function StatsPage() {
             </Col>
           </Row>
 
-          {/* 编码进度 + 作业状态 + 体积 */}
+          {/* 编码进度 + 体积（两者都不需要占满整行，各给 1/3） */}
           <Row gutter={[12, 12]}>
-            <Col xs={24} lg={16}>
+            <Col xs={24} sm={12} lg={8}>
               <Card size="small" variant="outlined" title="编码进度">
                 <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                   <Progress
@@ -182,7 +182,7 @@ export function StatsPage() {
                 </Space>
               </Card>
             </Col>
-            <Col xs={24} lg={8}>
+            <Col xs={24} sm={12} lg={8}>
               <Card size="small" variant="outlined" title="磁盘占用">
                 {sizeError ? (
                   <ErrorState error={sizeError} context="体积统计加载失败" onRetry={reloadSize} />
