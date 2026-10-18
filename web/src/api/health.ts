@@ -24,7 +24,7 @@ function isValidHealth(value: unknown): value is HealthResponse {
   );
 }
 
-/** GET /api/health —— 页头状态徽标、编码指纹、mock 标记、golden 状态都来自这里 */
+/** GET /api/health —— 页头状态徽标、编码指纹与设备、golden 状态都来自这里 */
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {
   const data = await apiRequest<unknown>('/health', { signal });
   if (!isValidHealth(data)) {
