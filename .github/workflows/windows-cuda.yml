@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Rust（MSVC 工具链）
         uses: dtolnay/rust-toolchain@stable
@@ -66,7 +66,7 @@ jobs:
           cache-on-failure: true
 
       - name: 安装 Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -80,7 +80,7 @@ jobs:
         # nvcc 在 Windows 上把 MSVC 的 cl.exe 当 host compiler。
         # windows-latest 装了 Visual Studio，但 cl.exe 默认**不在 PATH**里，
         # 不做这一步会报：nvcc fatal : Cannot find compiler 'cl.exe' in PATH
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
 
@@ -221,7 +221,7 @@ jobs:
             Out-File -Encoding ascii "dist/portable-SHA256SUMS"
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prompt-vault-windows-x86_64-cuda
           path: |
