@@ -89,7 +89,10 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.20
         with:
           # 钉 12.4：更新的 nvcc 与 candle-kernels 0.11 有兼容报告
-          cuda: "12.4.0"
+          # 回滚基线：tag v0.1.0-cuda12.4（CUDA 12.4 + windows-2022，已验证全绿）
+          # 实验：CUDA 13.2（candle 官方 CI 用 13.0.2/13.2.1；cudarc 已支持 13.x）
+          # 动机：12.4 最高只到 sm_90，不支持 Blackwell（RTX 50 系 sm_120）
+          cuda: "13.2.0"
           method: network
           # 刻意**不限制 sub-packages**（装完整 toolkit）。
           # 之前只装了 nvcc/cudart/cublas/curand/thrust，结果链接时缺 nvrtc.lib：
