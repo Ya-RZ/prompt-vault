@@ -531,7 +531,7 @@ export function JobsPage() {
             type="info"
             showIcon
             title="导入前主服务会先做金标校验"
-            description="未通过会返回 409 GOLDEN_FAILED 并拒绝创建作业；侧车不支持 /v1/verify 时按 unsupported 记录后继续。"
+            description="未通过时会拒绝创建作业；尚未加载模型时先记录，首次编码会再校验一次。"
           />
           {submitError ? <ErrorState error={submitError} context="创建导入作业失败" /> : null}
           <Form<ImportFormValues>
@@ -607,9 +607,6 @@ export function JobsPage() {
               }
             </Form.Item>
           </Form>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            契约 §6 还支持 asset_ids / prompt_ids 精确指定，本轮前端未提供入口（按 null 提交）。
-          </Text>
         </Space>
       </Modal>
 

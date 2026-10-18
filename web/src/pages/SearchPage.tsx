@@ -378,7 +378,7 @@ export function SearchPage() {
               onChange={setTags}
               options={tags.map((tag) => ({ value: tag, label: tag }))}
             />
-            <Tooltip title="契约 §5：nsfw 默认 false，即默认过滤掉 NSFW 资产；打开表示包含 NSFW。">
+            <Tooltip title="默认过滤 NSFW 资产；打开表示包含 NSFW。">
               <Space size={6}>
                 <Switch checked={nsfw} onChange={setNsfw} />
                 <Text>包含 NSFW</Text>

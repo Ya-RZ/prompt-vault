@@ -325,7 +325,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
         </Button>
         <Popconfirm
           title="删除该资产？"
-          description="将同时删除提示词、向量点与媒体文件（契约 §4）。"
+          description="将同时删除提示词、向量点与媒体文件。"
           okText="删除"
           okButtonProps={{ danger: true }}
           cancelText="取消"

@@ -231,23 +231,19 @@ const ERROR_COPY: Record<string, ErrorCopy> = {
   },
   PAYLOAD_TOO_LARGE: {
     title: '图片超出大小上限（413）',
-    hint:
-      '该图会被侧车静默截断，因此主服务直接拒绝。可参考下方 detail 中的 plan，' +
-      '裁剪图片或调低 max_pixels 后重试。',
+    hint: '图片超过服务端允许的大小，已拒绝。压缩或缩小图片后重试。',
   },
   GOLDEN_FAILED: {
-    title: '金标校验未通过（409）',
-    hint:
-      '侧车 /v1/verify 未通过，按开发文档 §9.4 不允许开始导入/编码作业。' +
-      '请检查编码器版本与设备是否与基准一致后重试。',
+    title: '模型自检未通过（409）',
+    hint: '编码前的一致性自检没通过，因此不允许开始导入/编码作业。请检查模型文件与运行设备后重试。',
   },
   CONFLICT: {
     title: '作业状态冲突（409）',
     hint: '例如对已结束的作业再次 resume/pause。请刷新作业列表后再操作。',
   },
   ENCODER_ERROR: {
-    title: '编码侧车返回异常（502）',
-    hint: '侧车返回 500 或响应结构不符合契约。请查看侧车日志（embed-server）后重试。',
+    title: '编码失败（502）',
+    hint: '图片或文本编码过程中出错，请查看主服务日志后重试。',
   },
   NOT_FOUND: {
     title: '资源不存在（404）',
@@ -259,7 +255,7 @@ const ERROR_COPY: Record<string, ErrorCopy> = {
   },
   SPARSE_UNAVAILABLE: {
     title: '稀疏向量不可用（501）',
-    hint: '侧车未提供 sparse 向量，稀疏检索路预留但不可用；hybrid 会自动退化为 dense。',
+    hint: '当前编码器不产出稀疏向量，稀疏检索不可用；hybrid 会自动退化为内容相似 + 关键词。',
   },
   INTERNAL: {
     title: '服务内部错误（500）',
@@ -289,7 +285,7 @@ export function describeError(error: unknown): ErrorPresentation {
     const parts: string[] = [];
     parts.push(copy ? copy.hint : error.message);
     if (!copy) {
-      parts.push('该错误码未在契约 §0 错误码表中，请对照主服务日志排查。');
+      parts.push('这是未预期的错误码，请对照主服务日志排查。');
     } else if (error.message && error.message !== copy.title) {
       parts.push(`后端信息：${error.message}`);
     }

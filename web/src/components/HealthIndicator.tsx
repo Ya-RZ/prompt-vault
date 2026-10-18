@@ -39,7 +39,7 @@ function goldenTooltip(golden: GoldenInfo): string {
       break;
     case 'unsupported':
       lines.push(
-        '侧车未提供 /v1/verify（开发文档 §5.4 改动 1 未实施），金标校验不可用。',
+        '当前后端没有可复用的历史基线，金标校验不适用。',
         '主服务不因此拒绝启动，但会在作业开始前按 unsupported 记录。',
       );
       break;
@@ -57,7 +57,7 @@ function goldenTooltip(golden: GoldenInfo): string {
   return lines.join('\n');
 }
 
-/** 页头右侧的健康徽标：状态、编码指纹短码、侧车设备、金标状态 */
+/** 页头右侧的健康徽标：状态、编码指纹短码、设备、金标状态 */
 export function HealthIndicator({ health, error, loading, onRefresh }: HealthIndicatorProps) {
   const refreshButton = (
     <Tooltip title="重新拉取健康状态">
@@ -84,7 +84,7 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
               ? presentation.description
               : loading
                 ? '正在请求健康状态…'
-                : '已收到响应但没有可用的健康数据，请检查主服务版本是否与 INTERFACES.md 一致。'
+                : '已收到响应但没有可用的健康数据，可能是主服务版本不匹配。'
           }
         >
           <Tag color={color} style={{ marginInlineEnd: 0 }}>
@@ -104,7 +104,7 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
       <Tooltip
         title={
           ready
-            ? '主服务与编码侧车均正常。'
+            ? '服务运行正常。'
             : '服务降级：编码不可用、金标失败或索引指纹不一致，请查看健康状态详情。'
         }
       >
