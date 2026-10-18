@@ -4082,6 +4082,7 @@ dependencies = [
  "candle-core",
  "chrono",
  "clap",
+ "cudarc 0.19.10",
  "fastembed",
  "hex",
  "image",

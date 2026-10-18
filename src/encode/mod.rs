@@ -538,7 +538,7 @@ pub fn health_snapshot(
                 EncoderMode::Candle => Some(
                     candle
                         .as_ref()
-                        .map(|c| c.device_label().to_string())
+                        .map(|c| c.device_display())
                         .unwrap_or_else(|| "cpu".to_string()),
                 ),
                 EncoderMode::Live => None,

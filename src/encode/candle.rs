@@ -82,35 +82,125 @@ impl DeviceSpec {
     }
 }
 
-/// 真正向 candle 要设备。返回 `(设备, 写进指纹的标签)`。
-fn resolve_device(spec: DeviceSpec) -> (Device, String) {
+/// 一张 NVIDIA 卡的静态信息。只有带 `cuda` feature 且驱动可用时才可能非空。
+#[derive(Debug, Clone)]
+pub struct CudaDeviceInfo {
+    pub ordinal: usize,
+    pub name: String,
+    pub compute_capability: (i32, i32),
+    pub total_mem_bytes: usize,
+}
+
+/// 枚举机器上所有 NVIDIA 设备。
+///
+/// 集成显卡（Intel / AMD）不会出现在这张表里 —— CUDA 的设备列表只由 NVIDIA 驱动提供，
+/// 所以「双显卡笔记本选到核显」在 CUDA 体系下不成立。返回空表表示没有可用 NVIDIA 卡，
+/// 调用方应回落到 CPU。
+pub fn cuda_inventory() -> Vec<CudaDeviceInfo> {
+    #[cfg(feature = "cuda")]
+    {
+        use cudarc::driver::CudaContext;
+        let count = match CudaContext::device_count() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::debug!(error = %e, "枚举 CUDA 设备失败（多半是没有 NVIDIA 驱动）");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::with_capacity(count.max(0) as usize);
+        for ordinal in 0..count {
+            match CudaContext::new(ordinal as usize) {
+                Ok(ctx) => {
+                    let name = ctx.name().unwrap_or_else(|_| format!("cuda:{ordinal}"));
+                    let compute_capability = ctx.compute_capability().unwrap_or((0, 0));
+                    let total_mem_bytes = ctx.total_mem().unwrap_or(0);
+                    out.push(CudaDeviceInfo {
+                        ordinal: ordinal as usize,
+                        name,
+                        compute_capability,
+                        total_mem_bytes,
+                    });
+                }
+                Err(e) => tracing::warn!(ordinal, error = %e, "CUDA 设备初始化失败，跳过"),
+            }
+        }
+        out
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        Vec::new()
+    }
+}
+
+/// auto 的选卡规则：算力优先，同算力比显存。
+///
+/// 为什么要这样排：机器上可能同时插着一张亮机卡和一张计算卡，驱动的 0 号不保证是
+/// 能用的那张；而纯按显存排，又会把大显存的老架构排到新卡前面。
+fn best_cuda(inventory: &[CudaDeviceInfo]) -> Option<&CudaDeviceInfo> {
+    inventory.iter().max_by_key(|d| {
+        let (major, minor) = d.compute_capability;
+        let cc = (major.max(0) as u64) * 100 + (minor.max(0) as u64);
+        cc * (1u64 << 40) + d.total_mem_bytes as u64
+    })
+}
+
+/// 真正向 candle 要设备。返回 `(设备, 指纹标签, 设备名)`。
+fn resolve_device(spec: DeviceSpec) -> (Device, String, Option<String>) {
     match spec {
-        DeviceSpec::Cpu => (Device::Cpu, "cpu".to_string()),
+        DeviceSpec::Cpu => (Device::Cpu, "cpu".to_string(), None),
         DeviceSpec::Cuda(ordinal) => match cuda_device(ordinal) {
-            Ok(dev) => (dev, format!("cuda:{ordinal}")),
+            Ok(dev) => {
+                let name = cuda_inventory()
+                    .into_iter()
+                    .find(|d| d.ordinal == ordinal)
+                    .map(|d| d.name);
+                (dev, format!("cuda:{ordinal}"), name)
+            }
             Err(e) => {
                 tracing::warn!(
                     ordinal,
                     error = %e,
                     "指定的 CUDA 设备不可用（二进制是否带 cuda feature、驱动是否装好？），已回落到 CPU"
                 );
-                (Device::Cpu, "cpu".to_string())
+                (Device::Cpu, "cpu".to_string(), None)
             }
         },
         DeviceSpec::Auto => {
             if cfg!(feature = "cuda") {
-                match cuda_device(0) {
+                // 先把整机的 NVIDIA 设备列出来：多卡机器上，「到底用了哪张」必须能从日志看到
+                let inventory = cuda_inventory();
+                for d in &inventory {
+                    tracing::info!(
+                        ordinal = d.ordinal,
+                        name = %d.name,
+                        sm = format!("{}{}", d.compute_capability.0, d.compute_capability.1),
+                        vram_gb = (d.total_mem_bytes as f64 / 1e9 * 10.0).round() / 10.0,
+                        "发现 NVIDIA 设备"
+                    );
+                }
+                // 清单可用就挑最好的；清单为空时再直接试 0 号
+                // （极少数环境驱动拒绝枚举，但仍能建上下文）
+                let (target, target_name) = match best_cuda(&inventory) {
+                    Some(d) => (d.ordinal, Some(d.name.clone())),
+                    None => (0, None),
+                };
+                match cuda_device(target) {
                     Ok(dev) => {
-                        tracing::info!("candle 使用 CUDA:0");
-                        (dev, "cuda:0".to_string())
+                        let label = format!("cuda:{target}");
+                        tracing::info!(
+                            device = %label,
+                            name = target_name.as_deref().unwrap_or("未知"),
+                            "candle 使用 CUDA"
+                        );
+                        (dev, label, target_name)
                     }
                     Err(e) => {
                         tracing::info!(error = %e, "没有可用的 CUDA 设备，candle 使用 CPU");
-                        (Device::Cpu, "cpu".to_string())
+                        (Device::Cpu, "cpu".to_string(), None)
                     }
                 }
             } else {
-                (Device::Cpu, "cpu".to_string())
+                (Device::Cpu, "cpu".to_string(), None)
             }
         }
     }
@@ -138,6 +228,9 @@ pub struct CandleEncoder {
     device: Device,
     /// 实际生效的设备标签（cpu / cuda:0），进编码指纹
     device_label: String,
+    /// 设备名（如 NVIDIA GeForce RTX 4060），只用于展示，**不进指纹**
+    /// —— 换一张同型号卡不该导致索引失效
+    device_name: Option<String>,
     /// 单张图片的字节上限（与 `--max-media-bytes` 同一口径）
     max_media_bytes: u64,
     /// 懒加载：第一次编码时才真正把权重 mmap 进来（2B 模型加载要几十秒）
@@ -153,7 +246,7 @@ impl CandleEncoder {
         device_spec: DeviceSpec,
         max_media_bytes: u64,
     ) -> Self {
-        let (device, device_label) = resolve_device(device_spec);
+        let (device, device_label, device_name) = resolve_device(device_spec);
         Self {
             model_dir: model_dir.into(),
             cache_dir: cache_dir.into(),
@@ -161,6 +254,7 @@ impl CandleEncoder {
             dtype,
             device,
             device_label,
+            device_name,
             max_media_bytes,
             loaded: Mutex::new(None),
         }
@@ -182,6 +276,14 @@ impl CandleEncoder {
     /// 实际生效的设备标签（cpu / cuda:0）。health 与指纹都用它。
     pub fn device_label(&self) -> &str {
         &self.device_label
+    }
+
+    /// 展示用描述：`cuda:0 (NVIDIA GeForce RTX 4060)` / `cpu`。
+    pub fn device_display(&self) -> String {
+        match &self.device_name {
+            Some(name) => format!("{} ({name})", self.device_label),
+            None => self.device_label.clone(),
+        }
     }
 
     pub fn cache_dir(&self) -> &Path {

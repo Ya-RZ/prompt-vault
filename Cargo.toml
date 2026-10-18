@@ -37,6 +37,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 fastembed = { version = "7.1.1", default-features = false, features = ["qwen3", "hf-hub", "ort-load-dynamic"] }
 # fastembed 的 Qwen3VLEmbedding 接口签名里出现 candle 的 Device/DType，需要同版本直接依赖
 candle-core = "0.11"
+# 仅 cuda feature 下使用：启动时枚举 NVIDIA 设备（名称 / 算力 / 显存），
+# 供 --candle-device auto 挑一张最合适的卡。candle 没有暴露设备枚举接口，只能直接调驱动。
+# 版本必须与 candle-core 0.11 依赖的 cudarc 一致，否则会同时链两份 driver。
+cudarc = { version = "0.19.8", default-features = false, optional = true, features = ["std", "driver", "dynamic-linking"] }
 
 # --- 资产处理 ---
 image = "0.25"
@@ -61,7 +65,7 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 # 进程内编码的 GPU 加速。默认**关闭**：本机与 CNB 的普通节点都没有 CUDA Toolkit，
 # 只有 GitHub Actions 的 Windows CUDA job 才会带 --features cuda 构建。
 # 打开后 candle 会编译 CUDA kernel，需要 nvcc + CUDA_COMPUTE_CAP（见 .github/workflows/windows-cuda.yml）。
-cuda = ["fastembed/cuda", "candle-core/cuda"]
+cuda = ["fastembed/cuda", "candle-core/cuda", "dep:cudarc"]
 # cuDNN 加速（可选；candle issue #3737 提示新 nvcc 版本可能编译失败，按需再开）
 cudnn = ["fastembed/cudnn", "candle-core/cudnn", "cuda"]
 
