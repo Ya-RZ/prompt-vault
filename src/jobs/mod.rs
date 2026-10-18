@@ -303,7 +303,7 @@ fn import_one(
     let bytes = meta.len() as i64;
     let id = state
         .db
-        .insert_asset(&kind, &rel, bytes, width, height, None, Some(&hash))?;
+        .insert_asset(&kind, &rel, None, bytes, width, height, None, Some(&hash))?;
     let _ = state.db.set_asset_dimensions(id, width, height, None, Some(&hash));
     Ok(ImportOutcome::Added)
 }

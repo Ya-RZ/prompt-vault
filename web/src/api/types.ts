@@ -211,6 +211,8 @@ export interface Asset {
   id: number;
   kind: AssetKind;
   rel_path: string;
+  /** 人可读标题（上传后填写；为空时前端回退显示文件名） */
+  title: string | null;
   bytes: number;
   width: number | null;
   height: number | null;
@@ -258,6 +260,8 @@ export interface UpdateAssetMetaRequest {
   nsfw?: boolean;
   tags?: string[];
   rel_path?: string;
+  /** 人可读标题；空串表示清空。与 rel_path 无关，不会移动文件 */
+  title?: string;
   width?: number | null;
   height?: number | null;
   duration_ms?: number | null;

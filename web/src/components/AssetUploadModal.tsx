@@ -35,8 +35,7 @@ function defaultTitle(asset: Asset): string {
 /**
  * 上传成功后的「填写信息」弹窗。
  *
- * 契约里 AssetDto 没有独立的 label/title 字段，所以「标题」落到 `rel_path`
- * （`POST /api/assets/{id}/meta` 支持 rel_path）；标签走 tags（全量替换语义）；
+ * 「标题」走 AssetDto.title（与文件路径无关）；标签走 tags（全量替换语义）；
  * 提示词走 `POST /api/assets/{id}/prompts`。
  */
 export function AssetUploadModal({ asset, open, onClose, onSaved }: AssetUploadModalProps) {
@@ -58,7 +57,7 @@ export function AssetUploadModal({ asset, open, onClose, onSaved }: AssetUploadM
       const title = values.title?.trim();
       // tags 为全量替换语义：这里提交表单里的完整标签列表
       await updateAssetMeta(asset.id, {
-        rel_path: title ? title : undefined,
+        title: title ?? '',
         tags: values.tags ?? [],
       });
 
@@ -129,7 +128,7 @@ export function AssetUploadModal({ asset, open, onClose, onSaved }: AssetUploadM
               prompt: '',
             }}
           >
-            <Form.Item label="标题" name="title" extra="后端没有独立标题字段，这里会写入资产的相对路径">
+            <Form.Item label="标题" name="title" extra="只影响展示，不会改动文件路径">
               <Input placeholder="例如 wallhaven/2026/cat.jpg" allowClear />
             </Form.Item>
             <Form.Item label="标签" name="tags">

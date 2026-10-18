@@ -72,7 +72,7 @@ pub async fn upload_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
 
     let id = state
         .db
-        .insert_asset(&kind, &rel, bytes, width, height, None, Some(&hash))?;
+        .insert_asset(&kind, &rel, None, bytes, width, height, None, Some(&hash))?;
     let _ = state.db.set_asset_dimensions(id, width, height, None, Some(&hash));
 
     let row = state.db.asset_must_exist(id)?;

@@ -20,6 +20,8 @@ CREATE TABLE asset_new (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT    NOT NULL CHECK (kind IN ('image', 'video', 'other')),
     rel_path    TEXT    NOT NULL UNIQUE,
+    -- 人可读的标题（上传后填写），与文件路径无关；为空时前端回退显示文件名
+    title       TEXT,
     bytes       INTEGER NOT NULL DEFAULT 0,
     width       INTEGER,
     height      INTEGER,

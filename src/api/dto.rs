@@ -44,6 +44,7 @@ pub fn asset_to_dto(
         id: asset.id,
         kind: asset.kind.clone(),
         rel_path: asset.rel_path.clone(),
+        title: asset.title.clone(),
         bytes: asset.bytes,
         width: asset.width,
         height: asset.height,

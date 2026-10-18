@@ -138,6 +138,7 @@ pub async fn update_meta(req: &mut Request, depot: &mut Depot, res: &mut Respons
         id,
         body.nsfw,
         body.rel_path.as_deref(),
+        body.title.as_deref(),
         body.width,
         body.height,
         body.duration_ms,

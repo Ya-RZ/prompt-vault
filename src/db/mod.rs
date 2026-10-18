@@ -123,7 +123,9 @@ impl Db {
 /// 0001 用的是 `CREATE TABLE IF NOT EXISTS`，老库不会被它改写，所以 0002 单独按需执行：
 /// 以「asset 表里有没有 hash 列」作为「0002 已应用」的标记（0002 会清空资产数据，不能重复跑）。
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
-    if has_column(conn, "asset", "hash")? {
+    // 同时看 hash 与 title：早期版本的 0002 没有 title 列，这里会判定为未应用并重建
+    // （会再清一次资产数据 —— 需求本来就是「清库重导」）。
+    if has_column(conn, "asset", "hash")? && has_column(conn, "asset", "title")? {
         return Ok(());
     }
     // 重建 asset 表要 DROP 再 RENAME。外键开关只能在事务外切换（事务内设置是 no-op），
@@ -166,6 +168,8 @@ pub struct AssetRow {
     pub id: i64,
     pub kind: String,
     pub rel_path: String,
+    /// 人可读标题（可为空）
+    pub title: Option<String>,
     pub bytes: i64,
     pub width: Option<i64>,
     pub height: Option<i64>,
@@ -184,6 +188,7 @@ impl AssetRow {
             id: row.get("id")?,
             kind: row.get("kind")?,
             rel_path: row.get("rel_path")?,
+            title: row.get("title")?,
             bytes: row.get("bytes")?,
             width: row.get("width")?,
             height: row.get("height")?,

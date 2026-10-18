@@ -62,6 +62,8 @@ pub struct AssetDto {
     pub id: i64,
     pub kind: String,
     pub rel_path: String,
+    /// 人可读标题（上传后填写，可为空）
+    pub title: Option<String>,
     pub bytes: i64,
     pub width: Option<i64>,
     pub height: Option<i64>,
@@ -108,6 +110,8 @@ pub struct UpdateMetaRequest {
     pub nsfw: Option<bool>,
     pub tags: Option<Vec<String>>,
     pub rel_path: Option<String>,
+    /// 人可读标题（空串 = 清空）；与 rel_path 无关，不会动文件
+    pub title: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub duration_ms: Option<i64>,

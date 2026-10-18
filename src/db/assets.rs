@@ -9,7 +9,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::types::{AssetListQuery, CountItem};
 
 const ASSET_COLS: &str =
-    "id, kind, rel_path, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at";
+    "id, kind, rel_path, title, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at";
 
 impl Db {
     // ------------------------------------------------------------ 资产
@@ -19,6 +19,7 @@ impl Db {
         &self,
         kind: &str,
         rel_path: &str,
+        title: Option<&str>,
         bytes: i64,
         width: Option<i64>,
         height: Option<i64>,
@@ -28,15 +29,16 @@ impl Db {
         let now = now_rfc3339();
         self.with_conn(|c| {
             c.execute(
-                "INSERT INTO asset (kind, rel_path, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'blake3', 0, ?8)
+                "INSERT INTO asset (kind, rel_path, title, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'blake3', 0, ?9)
                  ON CONFLICT(rel_path) DO UPDATE SET
                      bytes = excluded.bytes,
                      width = COALESCE(excluded.width, asset.width),
                      height = COALESCE(excluded.height, asset.height),
                      duration_ms = COALESCE(excluded.duration_ms, asset.duration_ms),
-                     hash = COALESCE(excluded.hash, asset.hash)",
-                params![kind, rel_path, bytes, width, height, duration_ms, hash, now],
+                     hash = COALESCE(excluded.hash, asset.hash),
+                     title = COALESCE(excluded.title, asset.title)",
+                params![kind, rel_path, title, bytes, width, height, duration_ms, hash, now],
             )?;
             c.query_row("SELECT id FROM asset WHERE rel_path = ?1", [rel_path], |r| r.get(0))
         })
@@ -183,11 +185,13 @@ impl Db {
         self.with_conn(|c| c.execute("DELETE FROM asset WHERE id = ?1", [id]).map(|n| n > 0))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_asset_meta(
         &self,
         id: i64,
         nsfw: Option<bool>,
         rel_path: Option<&str>,
+        title: Option<&str>,
         width: Option<i64>,
         height: Option<i64>,
         duration_ms: Option<i64>,
@@ -201,6 +205,15 @@ impl Db {
         if let Some(v) = rel_path {
             sets.push("rel_path = ?");
             vals.push(Value::Text(v.to_string()));
+        }
+        if let Some(v) = title {
+            // 空串等价于清空标题
+            sets.push("title = ?");
+            vals.push(if v.trim().is_empty() {
+                Value::Null
+            } else {
+                Value::Text(v.to_string())
+            });
         }
         if let Some(v) = width {
             sets.push("width = ?");
