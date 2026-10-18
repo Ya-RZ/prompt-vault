@@ -138,6 +138,28 @@ pub async fn create_encode(req: &mut Request, depot: &mut Depot, res: &mut Respo
         params_json.as_deref(),
         state.index_fingerprint()?.as_deref(),
     )?;
+    // 同步给出一个准确的 total：作业在后台线程里才设置它，
+    // 否则创建响应会先返回 total=0，前端看起来像「没有待编码对象」。
+    {
+        let fp = state.index_fingerprint()?;
+        let asset_count = match params.asset_ids.as_ref() {
+            Some(ids) => ids.len() as i64,
+            None => state
+                .db
+                .pending_assets(params.limit, fp.as_deref())
+                .map(|v| v.len() as i64)
+                .unwrap_or(0),
+        };
+        let prompt_count = match params.prompt_ids.as_ref() {
+            Some(ids) => ids.len() as i64,
+            None => state
+                .db
+                .pending_prompts(params.limit, fp.as_deref())
+                .map(|v| v.len() as i64)
+                .unwrap_or(0),
+        };
+        let _ = state.db.set_job_total(&id, asset_count + prompt_count);
+    }
     state
         .jobs
         .start_encode(Arc::clone(&state), id.clone(), params);

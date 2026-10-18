@@ -554,7 +554,20 @@ async fn run_encode(
     } else {
         state.db.pending_assets(params.limit, index_fp.as_deref()).unwrap_or_default()
     };
-    let _ = state.db.set_job_total(&job_id, assets.len() as i64 + 1);
+    // ---- 提示词（先查出来，total 要按「资产 + 提示词」算）----
+    let prompts = if let Some(ids) = params.prompt_ids.as_ref() {
+        ids.iter()
+            .filter_map(|id| state.db.get_prompt(*id).ok().flatten())
+            .map(|p| (p.id, p.asset_id, p.text))
+            .collect()
+    } else {
+        state.db.pending_prompts(params.limit, index_fp.as_deref()).unwrap_or_default()
+    };
+
+    // 一个作业同时编码「资产（图/视频封面）」与「提示词（文本）」两类对象。
+    // 以前这里写死 +1，导致 total 永远比实际任务数少（或提示词多于 1 个时偏小），
+    // 表现为「导入 23 张图，编码却显示 24」或反过来。
+    let _ = state.db.set_job_total(&job_id, (assets.len() + prompts.len()) as i64);
 
     let batch_size = params.batch_size.clamp(1, 32);
     for chunk in assets.chunks(batch_size) {
@@ -656,16 +669,6 @@ async fn run_encode(
         let cursor = format!("asset:{}", rows.last().map(|r| r.0).unwrap_or(0));
         let _ = state.db.update_job_progress(&job_id, done, failed, skipped, Some(&cursor));
     }
-
-    // ---- 提示词 ----
-    let prompts = if let Some(ids) = params.prompt_ids.as_ref() {
-        ids.iter()
-            .filter_map(|id| state.db.get_prompt(*id).ok().flatten())
-            .map(|p| (p.id, p.asset_id, p.text))
-            .collect()
-    } else {
-        state.db.pending_prompts(params.limit, index_fp.as_deref()).unwrap_or_default()
-    };
 
     for chunk in prompts.chunks(batch_size) {
         match check(&control) {
