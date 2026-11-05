@@ -53,6 +53,8 @@ base64 = "0.23"
 
 # --- 工具 ---
 clap = { version = "4", features = ["derive", "env"] }
+# 配置文件（config.toml）：只解析，不引入复杂配置框架
+toml = "0.8"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"

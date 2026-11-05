@@ -48,6 +48,11 @@ pub struct Config {
     pub max_aspect_ratio: f64,
     /// 图片像素安全区上限；`None` = 按显存自动选择（见 candle::auto_max_pixels）
     pub max_pixels: Option<u64>,
+    /// ComfyUI 的 output 目录（`config.toml` 的 `[comfyui] output_dir`）：
+    /// 导入作业不填 root 时默认扫这里
+    pub comfyui_output_dir: Option<PathBuf>,
+    /// 导入时是否复制源文件（`true`，默认）而不是移动；复制后源目录保持完整
+    pub import_copy: bool,
 }
 
 impl Config {

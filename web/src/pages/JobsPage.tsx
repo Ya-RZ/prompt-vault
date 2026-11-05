@@ -58,7 +58,7 @@ const { Text } = Typography;
 const DEFAULT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4'];
 
 interface ImportFormValues {
-  root: string;
+  root?: string;
   recursive: boolean;
   extensions: string[];
   default_prompt_role?: string;
@@ -257,7 +257,7 @@ export function JobsPage() {
     setSubmitError(null);
     try {
       const payload: ImportJobRequest = {
-        root: values.root.trim(),
+        root: (values.root ?? '').trim(),
         recursive: values.recursive ?? true,
         extensions: values.extensions && values.extensions.length > 0 ? values.extensions : DEFAULT_EXTENSIONS,
         default_prompt_role: values.default_prompt_role?.trim() || 'caption',
@@ -545,8 +545,12 @@ export function JobsPage() {
             }}
             onFinish={handleCreateImport}
           >
-            <Form.Item name="root" label="根目录 root" rules={[{ required: true, message: '请输入根目录' }]}>
-              <Input placeholder="例如 media 或 D:/pics" />
+            <Form.Item
+              name="root"
+              label="根目录 root"
+              extra="留空 = config.toml 里配置的 ComfyUI output 目录"
+            >
+              <Input placeholder="留空使用 ComfyUI output，或填 media / D:/pics" allowClear />
             </Form.Item>
             <Form.Item name="extensions" label="扩展名 extensions">
               <Select mode="tags" placeholder="回车添加，例如 jpg" options={DEFAULT_EXTENSIONS.map((ext) => ({ value: ext, label: ext }))} />

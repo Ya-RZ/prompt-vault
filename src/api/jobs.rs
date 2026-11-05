@@ -94,9 +94,28 @@ pub async fn create_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
     // 导入前金标闸门（§9.4）
     state.check_golden_gate()?;
 
+    // 空 root = 配置里的 ComfyUI output 目录（没配置才回落到 media）。
+    // 目录不存在直接 400：否则要等作业异步失败，用户在作业详情里才看得到。
+    let abs_root = crate::jobs::resolve_import_root(
+        &params.root,
+        &state.cfg.media_dir,
+        state.cfg.comfyui_output_dir.as_deref(),
+    );
+    if !abs_root.exists() {
+        return Err(ApiError::bad_request(format!(
+            "导入源目录不存在: {}（root 留空时使用 config.toml 的 [comfyui] output_dir）",
+            abs_root.display()
+        )));
+    }
+    if !abs_root.is_dir() {
+        return Err(ApiError::bad_request(format!(
+            "导入源不是目录: {}",
+            abs_root.display()
+        )));
+    }
+
     // 存储里只放相对路径：先解析成绝对，再相对可执行文件目录；
     // 跨盘等无法相对化的情况存空串（宁可不记，也不把绝对路径写进库）。
-    let abs_root = crate::jobs::resolve_import_root(&params.root, &state.cfg.media_dir);
     let stored_root = crate::paths::relativize_to_exe(&abs_root).unwrap_or_default();
     if stored_root.is_empty() {
         tracing::warn!(

@@ -181,7 +181,11 @@ async fn run_import(
         return;
     }
 
-    let scan_root = resolve_import_root(&params.root, &state.cfg.media_dir);
+    let scan_root = resolve_import_root(
+        &params.root,
+        &state.cfg.media_dir,
+        state.cfg.comfyui_output_dir.as_deref(),
+    );
     if !scan_root.exists() {
         let msg = format!("扫描根目录不存在: {}", scan_root.display());
         let _ = state.db.add_job_error(&job_id, None, "NOT_FOUND", &msg);
@@ -299,7 +303,12 @@ fn import_one(
         TargetChoice::Existing(_) => return Ok(ImportOutcome::Skipped),
     };
     let target = state.cfg.media_path(&rel);
-    move_file(src, &target)?;
+    if state.cfg.import_copy {
+        // 复制模式：源目录（ComfyUI output）保持完整，媒体库里多一份副本。
+        copy_file(src, &target)?;
+    } else {
+        move_file(src, &target)?;
+    }
 
     let bytes = meta.len() as i64;
     let id = state
@@ -404,6 +413,22 @@ pub fn sanitize_file_name(raw: &str) -> String {
     name
 }
 
+/// 复制源文件到资产库（`import.copy = true` 时使用）：源目录保持完整。
+pub fn copy_file(src: &std::path::Path, dst: &std::path::Path) -> ApiResult<()> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ApiError::internal(format!("创建目录失败 {}: {e}", parent.display())))?;
+    }
+    std::fs::copy(src, dst).map_err(|e| {
+        ApiError::internal(format!(
+            "复制文件失败 {} → {}: {e}",
+            src.display(),
+            dst.display()
+        ))
+    })?;
+    Ok(())
+}
+
 /// 需求 4：原始文件**移动**进资产库 —— 同盘 rename，跨盘 copy + remove。
 pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> ApiResult<()> {
     if src == dst {
@@ -473,11 +498,18 @@ fn is_inside_media(media_dir: &std::path::Path, path: &std::path::Path) -> bool 
 
 /// 导入根目录：绝对路径照用；相对路径以**当前可执行文件所在目录**为基准（需求 4，不是 cwd）。
 ///
-/// 空串沿用旧语义 = 整个 media 目录；此时所有文件都在库里，会全部走「跳过」分支。
-pub fn resolve_import_root(raw: &str, media_dir: &std::path::Path) -> std::path::PathBuf {
+/// 空串 = 配置里的 ComfyUI output 目录（`config.toml` 的 `[comfyui] output_dir`）；
+/// 没配置时才退回旧语义（整个 media 目录，此时所有文件都在库里，会全部走「跳过」分支）。
+pub fn resolve_import_root(
+    raw: &str,
+    media_dir: &std::path::Path,
+    comfyui_output: Option<&std::path::Path>,
+) -> std::path::PathBuf {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        // 空 = 整个 media 目录；media_dir 可能是相对路径，按可执行文件目录解析
+        if let Some(dir) = comfyui_output {
+            return crate::paths::absolute_from_exe(dir);
+        }
         return crate::paths::absolute_from_exe(media_dir);
     }
     crate::paths::absolute_from_exe(std::path::Path::new(trimmed))
@@ -850,4 +882,41 @@ pub fn encoder_capability_note(state: &Arc<AppState>) -> serde_json::Value {
         "vector_names": [VEC_IMAGE, VEC_TEXT],
         "sparse_enabled_in_index": state.vectors.sparse_enabled(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_root_prefers_comfyui_output() {
+        let media = std::path::Path::new("/tmp/pv-media");
+        let comfy = std::path::Path::new("/tmp/pv-comfy");
+        assert_eq!(
+            resolve_import_root("", media, Some(comfy)),
+            comfy.to_path_buf(),
+            "配置了 ComfyUI 目录时，空 root 应扫它"
+        );
+    }
+
+    #[test]
+    fn empty_root_falls_back_to_media() {
+        let media = std::path::Path::new("/tmp/pv-media");
+        assert_eq!(
+            resolve_import_root("", media, None),
+            media.to_path_buf(),
+            "没有配置时保持旧行为"
+        );
+    }
+
+    #[test]
+    fn explicit_root_wins() {
+        let media = std::path::Path::new("/tmp/pv-media");
+        let comfy = std::path::Path::new("/tmp/pv-comfy");
+        assert_eq!(
+            resolve_import_root("/tmp/other", media, Some(comfy)),
+            std::path::PathBuf::from("/tmp/other"),
+            "显式 root 必须优先"
+        );
+    }
 }

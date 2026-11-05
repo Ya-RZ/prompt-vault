@@ -17,6 +17,7 @@ use rust_embed::RustEmbed;
 use salvo::prelude::*;
 
 use prompt_vault::api;
+use prompt_vault::config_file;
 use prompt_vault::state::{AppState, Config};
 use prompt_vault::vector::QuantMode;
 
@@ -89,6 +90,9 @@ struct Args {
 注意：该值会写进编码指纹，改动后已有索引必须全量重编码。"
     )]
     max_pixels: Option<u64>,
+    /// 配置文件路径（默认按 `<exe>/config.toml`、当前目录 `config.toml` 查找）
+    #[arg(long, env = "PV_CONFIG")]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -105,6 +109,16 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+
+    // 配置文件是可选输入：没有就用车默认值，有就严格解析（错一行就拒绝启动）。
+    let file_cfg = match config_file::load(args.config.as_deref()) {
+        Ok(c) => c.unwrap_or_default(),
+        Err(e) => {
+            eprintln!("配置文件加载失败: {e:#}");
+            std::process::exit(1);
+        }
+    };
+
     let flags = Arc::new(Flags {
         host: args.host.clone(),
         port: args.port,
@@ -137,6 +151,8 @@ async fn main() {
         max_media_bytes: args.max_media_bytes,
         max_aspect_ratio: args.max_aspect_ratio,
         max_pixels: args.max_pixels,
+        comfyui_output_dir: file_cfg.comfyui_output_dir(),
+        import_copy: file_cfg.import_copy(),
     };
 
     let state = match AppState::new(cfg).await {
@@ -148,6 +164,17 @@ async fn main() {
     };
 
     print_banner(&state, &flags);
+
+    // 配置的 ComfyUI 目录不存在不阻止启动（可能只是还没接上），但要说清楚。
+    match &state.cfg.comfyui_output_dir {
+        Some(dir) if dir.is_dir() => {
+            tracing::info!(path = %dir.display(), "ComfyUI output 目录已配置（导入作业不填 root 时默认扫这里）")
+        }
+        Some(dir) => {
+            tracing::warn!(path = %dir.display(), "配置的 ComfyUI output 目录不存在：导入作业会直接失败")
+        }
+        None => tracing::info!("未配置 ComfyUI output 目录（config.toml 的 [comfyui] output_dir）"),
+    }
 
     // ---- 启动自检：编码指纹 + 金标（开发文档 §9.4）----
     // 侧车已移除：编码在进程内完成，这里只打印指纹与设备，
@@ -248,6 +275,19 @@ fn print_banner(state: &Arc<AppState>, flags: &Flags) {
     );
     println!("  索引指纹 : {index_fp}");
     println!("  媒体目录 : {}", state.cfg.media_dir.display());
+    println!(
+        "  ComfyUI  : {}",
+        state
+            .cfg
+            .comfyui_output_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(未配置)".into())
+    );
+    println!(
+        "  导入模式 : {}",
+        if state.cfg.import_copy { "复制（保留源文件）" } else { "移动" }
+    );
     println!("  缩略图   : {}（等比缩放、不裁剪，按需生成）", state.cfg.thumb_dir.display());
     println!("  前端产物 : {}", flags.web_dir.display());
     println!("──────────────────────────────────────────────");
