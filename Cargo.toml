@@ -28,19 +28,10 @@ qdrant-client = { version = "1.19", default-features = false, features = ["serde
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# --- 进程内编码（candle 后端；HTTP 侧车已移除，只加载本地模型）---
-# qwen3: candle 实现的 Qwen3-VL 多模态编码；hf-hub: 用它提供的缓存目录解析（离线可控）
-# ort-load-dynamic: fastembed 会无条件引入 `ort`(ONNX Runtime)，即使我们只用 candle 后端。
-#   不加这个 feature 时，链接期会要求 onnxruntime 的符号，Windows 上直接
-#   LNK2019: unresolved external symbol OrtGetApiBase / LNK1120。
-#   动态加载后只有真正调用 ONNX 路径时才需要 onnxruntime.dll —— 我们从不调用。
-fastembed = { version = "7.1.1", default-features = false, features = ["qwen3", "hf-hub", "ort-load-dynamic"] }
-# fastembed 的 Qwen3VLEmbedding 接口签名里出现 candle 的 Device/DType，需要同版本直接依赖
-candle-core = "0.11"
-# 仅 cuda feature 下使用：启动时枚举 NVIDIA 设备（名称 / 算力 / 显存），
-# 供 --candle-device auto 挑一张最合适的卡。candle 没有暴露设备枚举接口，只能直接调驱动。
-# 版本必须与 candle-core 0.11 依赖的 cudarc 一致，否则会同时链两份 driver。
-cudarc = { version = "0.19.8", default-features = false, optional = true, features = ["std", "driver", "dynamic-linking"] }
+# --- 编码：第三方 embedding API（OpenAI 兼容 /v1/embeddings）---
+# 2026-11：删除进程内 candle 模型加载（4 GB 权重 + 显存），改为调用云端服务。
+# 刻意用 rustls 而不是 native-tls：项目不依赖 openssl，否则 Windows 交叉编译会卡。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # --- 资产处理 ---
 image = "0.25"
@@ -64,14 +55,6 @@ chrono = "0.4"
 
 # --- 前端产物打包进二进制（开发文档 §0：构建产物由 Rust 侧 embed）---
 rust-embed = { version = "8", features = ["include-exclude"] }
-
-[features]
-# 进程内编码的 GPU 加速。默认**关闭**：本机与 CNB 的普通节点都没有 CUDA Toolkit，
-# 只有 GitHub Actions 的 Windows CUDA job 才会带 --features cuda 构建。
-# 打开后 candle 会编译 CUDA kernel，需要 nvcc + CUDA_COMPUTE_CAP（见 .github/workflows/windows-cuda.yml）。
-cuda = ["fastembed/cuda", "candle-core/cuda", "dep:cudarc"]
-# cuDNN 加速（可选；candle issue #3737 提示新 nvcc 版本可能编译失败，按需再开）
-cudnn = ["fastembed/cudnn", "candle-core/cudnn", "cuda"]
 
 [dev-dependencies]
 tempfile = "3"

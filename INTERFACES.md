@@ -4,7 +4,7 @@
 > 任何一侧改了接口，先改本文件再改代码。
 > 依据：`开发文档.md` §7（API 契约）、§8（数据模型）、§9（双重检测）、§6（Qdrant Edge）。
 > 生成于 2026-10-16。
-> **2026-10-18 修订：编码改为进程内 candle（§1 重写），侧车契约、`encoder.mode`/`url` 字段已删除。**
+> **2026-11 修订：删除进程内 candle，编码改为第三方 embedding API（§1 重写）。**
 
 ---
 
@@ -12,7 +12,7 @@
 
 | 项 | 约定 |
 | --- | --- |
-| 监听 | `127.0.0.1:8918`（默认；`--port` 覆盖）。编码在进程内完成（candle），没有独立侧车进程 |
+| 监听 | `127.0.0.1:8918`（默认；`--port` 覆盖）。编码走 HTTPS 调用第三方服务，没有本地推理进程 |
 | 编码 | 请求/响应统一 `application/json; charset=utf-8` |
 | 时间 | RFC3339 UTC 字符串，例 `"2026-10-16T12:00:00Z"` |
 | 分页 | 请求 `?page=1&page_size=50`（`page_size` 上限 200）→ 响应 `{ "items": [...], "total": 123, "page": 1, "page_size": 50 }` |
@@ -40,71 +40,64 @@
 
 ---
 
-## 1. 编码后端（进程内 candle）
+## 1. 编码后端（第三方 embedding API）
 
-编码在**主服务进程内**完成：candle + fastembed 7.1.1 加载本地 `Qwen3-VL-Embedding-2B`。
-（历史：原先通过 `embed-server/` 的 Python HTTP 侧车编码，该侧车与 `live` 模式已随代码移除。）
+2026-11 起**不再在进程内加载模型**：编码通过 HTTPS 调用 OpenAI 兼容的 `/v1/embeddings`，
+默认接硅基流动 `Qwen/Qwen3-VL-Embedding-8B`（4096 维）。
 
-### 1.1 模型目录与加载
+### 1.1 配置
 
-| 项 | 行为 |
+| 项 | 来源 |
 | --- | --- |
-| 模型目录解析 | `--model-dir` / `PV_MODEL_DIR`（显式指定必须有效，不合法则视为“没有模型”）→ `<exe目录>/models/qwen3-vl-embedding-2b` → `<cwd>/models/…` → `<cwd>/../models/…` |
-| 权重加载 | **懒加载**：第一次编码才 mmap（4.2 GB 不复制），启动只解析目录 |
-| 强制离线 | 把模型目录伪装成 HF 缓存（`$HF_HOME/hub/models--Qwen--Qwen3-VL-Embedding-2B/snapshots/local/` + `refs/main`），并设 `HF_HUB_OFFLINE=1`；缓存里除 `preprocessor_config.json` 用**改写副本**（`max_pixels=3145728`）外，其余文件硬链接（跨设备退回复制） |
-| HF 缓存位置 | `--hf-cache-dir`（默认 `<data-dir>/hf-cache`），不写进模型目录（模型目录可能是只读挂载） |
-| 设备 | `--candle-device auto`（默认：二进制带 cuda 且驱动可用时用 GPU，否则 CPU）/ `cpu` / `cuda:N`；多卡时 auto 选取「算力优先、同算力比显存」 |
-| 精度 | `--candle-dtype f32`（默认）/ `f16` / `bf16` |
-| 指纹 | `Qwen/Qwen3-VL-Embedding-2B\|candle\|dtype=f32\|dim=2048\|pool=lasttoken\|norm=L2\|max_pixels=3145728\|max_length=8192\|backend=fastembed-7.1\|device=cpu` |
+| 服务地址 | `config.toml` 的 `[embedding] base_url`，或 `--embedding-base-url` / `PV_EMBEDDING_BASE_URL` |
+| 模型 | `[embedding] model`，或 `--embedding-model` / `PV_EMBEDDING_MODEL` |
+| API Key | `[embedding] api_key`，或 `--embedding-api-key` / `PV_EMBEDDING_API_KEY` |
+| 维度 | `[embedding] dimensions`（默认 4096），或 `--dim` / `PV_DIM` |
+| 超时 | `[embedding] timeout_secs`（默认 60） |
+| 指纹 | `http\|<base_url>\|<model>\|dim=4096\|norm=l2\|v1` |
 
-### 1.2 没有模型时的行为
+### 1.2 请求形态
 
-编码不可用**不阻止启动**：
+- 文本：`input: ["..."]`
+- 图片：`input: [{"image": "data:image/png;base64,..."}]`
+- 一次只发一种模态；同时有文本和图片时**图片优先**
+- **视频不支持**：`data:video/*` 直接返回 `ENCODER_ERROR`
+
+### 1.3 没有服务时的行为
 
 | 场景 | 行为 |
 | --- | --- |
-| 有模型 | `/api/health` → `READY`，`encoder.reachable=true` |
-| 没有模型 | 启动照常（日志 warn）；`/api/health` → `DEGRADED`、`encoder.reachable=false`；**文本检索自动退化为纯词法**（`effective_mode="lexical"`，`warnings` 里说明）；`mode=dense` 与以图搜图返回 `ENCODER_UNREACHABLE` |
-| `--mock` | 不加载模型，向量由 sha256 派生（指纹 `mock\|dim=2048\|v1\|device=cpu`），仅用于链路验证 |
+| 配了 key 且探测成功 | `/api/health` → `READY`，`encoder.reachable=true` |
+| 没配 key | 启动照常（warn）；`DEGRADED`、`reachable=false`；文本检索退化为纯词法；`mode=dense` / 以图搜图返回 `ENCODER_UNREACHABLE` |
+| key 错 / 网络不通 | 启动探测 `failed`（**不阻止启动**）；health `DEGRADED`；导入/编码作业被金标闸门拒绝 |
+| `--mock` | 不联网，sha256 派生伪向量（指纹 `mock\|dim=4096\|v1\|device=cpu`），仅用于链路验证 |
 
-#### 图片预处理（编码前）
-
-| 检查 | 条件 | 行为 |
-| --- | --- | --- |
-| 宽高比 | 长边/短边 > `--max-aspect-ratio`（默认 `8.0`，`0` 表示不检查） | **直接 `400 BAD_REQUEST`**，`detail` 带 `width/height/aspect_ratio/max_aspect_ratio` |
-| 像素数 | 宽×高 > 当前像素上限（`--max-pixels`；**不指定时按显存自动选择**：<10 GiB → 1,048,576、10–24 GiB → 1,572,864、≥24 GiB → 3,145,728） | 等比缩放至安全区后再编码；提示写进检索响应的 `warnings`，或作业日志 |
-| 尺寸在安全区 | 宽×高 ≤ `--max-pixels` | 原样交给 fastembed，不重复解码 |
-
-只读文件头取尺寸：比例不合格的图（往往也是大文件）不需要整体解码就能拒绝。
-
-### 1.3 硬规则（开发文档 §10 铁律 1、§9）
+### 1.4 硬规则（开发文档 §10 铁律）
 
 1. 当前编码指纹落库为**索引指纹**（`meta` 表 `index_fingerprint`），第一次写入时钉住。
 2. 写入前比对指纹；不一致 → `FINGERPRINT_MISMATCH` **拒绝写入**。
-3. 查询时若当前指纹与索引指纹不一致 → 拒绝检索并返回 `FINGERPRINT_MISMATCH`（同一空间才能比）。
-4. 编码不可用**不报 503 拦检索**：文本检索退化为词法；只有必须有向量的接口（以图搜图、`mode=dense`）才返回 `ENCODER_UNREACHABLE`。
+3. 查询时若当前指纹与索引指纹不一致 → 拒绝检索并返回 `FINGERPRINT_MISMATCH`。
+4. 编码不可用**不报 503 拦检索**：文本检索退化为词法；只有必须有向量的接口才返回 `ENCODER_UNREACHABLE`。
 
-#### 三段文本金标自检（模型加载后自动执行）
+### 1.5 金标探测
 
-每次加载模型后，用三段固定文本（全中文 / 全英文 / 中英混合）跑一次自检：
+启动时调用一次 API（`probe`），验证连通性与维度：
 
-| 检查 | 不通过的表现 |
+| 结果 | 条件 |
 | --- | --- |
-| 三段都能编码、维度 2048、无 NaN/Inf | `golden.status=failed`，编码请求返回 `409 GOLDEN_FAILED` |
-| 三段两两余弦 < 0.99（防「常数向量」退化） | 同上 |
-| 与基线向量余弦 ≥ 0.9999（基线存在时） | 同上，`detail` 给出各段余弦 |
+| `passed` | 调用成功且返回维度 = 配置维度 |
+| `failed` | 调用失败或维度不符（作业闸门拦截） |
+| `unsupported` | `--mock` |
+| `unchecked` | 未配置服务，或还没发起过调用 |
 
-- 基线文件：`<data-dir>/hf-cache/golden-baseline.json`，记录**编码指纹 + 三段向量**
-- 基线不存在 → 首次加载时创建（`status=created`）
-- 指纹变化（换模型 / 精度 / 设备 / 像素口径）→ 基线自动重建并打 warn，不参与比对
-- 自检失败时 `embed` 直接拒绝出向量，作业与搜索都会看到 `GOLDEN_FAILED`
+云端没有本地基线，**不做余弦比对**；`/api/maintenance/golden/verify` 可手动重探。
 
-### 1.4 已知限制（不静默降级）
+### 1.6 已知限制（不静默降级）
 
-1. **不支持图文混合输入**：`{text, image}` 同时存在 → `400`，`detail.index` 指向该输入项（fastembed 的 `Qwen3VLEmbedding` 只实现 text-only / image-only；本项目本就是 image / text 两个向量名分开存）。
-2. **不回传 `resized` / `vision_tokens`**：这两个诊断字段只由旧侧车提供，candle 版为 `null`。
-3. **不产出 sparse**：hybrid 实际是 dense + lexical，`warnings` 里显式说明；`SPARSE_UNAVAILABLE` 只在索引未启用稀疏或显式 `mode=sparse` 时出现。
-4. **金标校验为 `unsupported`**：candle 没有可复用的历史基线（与旧实现不同源），不拦作业。
+1. **不产出 sparse**：hybrid 实际是 dense + lexical，`warnings` 里显式说明；`SPARSE_UNAVAILABLE` 只在索引未启用稀疏或显式 `mode=sparse` 时出现。
+2. **`resized` / `vision_tokens` 为 `null`**：服务端预处理不可见。
+3. **视频不支持**：视频资产需要先抽帧或上传封面，再作为图片导入。
+4. **云端可能静默升级模型**：指纹只能钉住 `base_url + model + dim`，检索质量突变时先查服务商。
 
 ## 2. 数据模型（SQLite，见 `migrations/0001_init.sql`，单一 schema 文件）
 
@@ -154,29 +147,29 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `
   "encoder": {
     "reachable": true,
     "mock": false,
-    "model": "Qwen/Qwen3-VL-Embedding-2B",
-    "device": "cpu",
-    "dim": 2048,
-    "model_dir": "/workspace/prompt-vault/models/qwen3-vl-embedding-2b",
-    "max_pixels": 3145728,
-    "max_length": 8192,
-    "loaded": false,
-    "fingerprint": "Qwen/Qwen3-VL-Embedding-2B|candle|dtype=f32|dim=2048|…|device=cpu",
+    "model": "Qwen/Qwen3-VL-Embedding-8B",
+    "device": "cloud",
+    "dim": 4096,
+    "model_dir": null,
+    "max_pixels": null,
+    "max_length": null,
+    "loaded": true,
+    "fingerprint": "http|https://api.siliconflow.cn/v1|Qwen/Qwen3-VL-Embedding-8B|dim=4096|norm=l2|v1",
     "last_error": null,
-    "last_checked_at": "2026-10-18T12:00:00Z"
+    "last_checked_at": "2026-11-05T12:00:00Z"
   },
   "golden": {
-    "status": "unsupported",
-    "passed": null,
-    "checked_at": "2026-10-18T12:00:00Z",
-    "detail": "candle 后端没有可复用的历史基线（与旧实现不同源）；换后端后需全量重编码",
-    "cos_text": null, "cos_image": null, "threshold": null, "device_mismatch": false
+    "status": "passed",
+    "passed": true,
+    "checked_at": "2026-11-05T12:00:00Z",
+    "detail": "第三方 embedding 调用可用（云端无本地基线，只验证连通性与维度）",
+    "cos_text": null, "cos_image": null, "threshold": 0.999, "device_mismatch": false
   },
   "index": {
-    "fingerprint": "Qwen/Qwen3-VL-Embedding-2B|candle|…|device=cpu",
+    "fingerprint": "http|https://api.siliconflow.cn/v1|Qwen/Qwen3-VL-Embedding-8B|dim=4096|norm=l2|v1",
     "points": 1234, "assets": 1200, "prompts": 34,
-    "dense_size": 2048, "sparse_enabled": false, "quantization": "scalar-int8",
-    "dir": "http://127.0.0.1:6333#pv"
+    "dense_size": 4096, "sparse_enabled": true, "quantization": "scalar-int8",
+    "dir": "http://127.0.0.1:6334#pv"
   },
   "db": { "path": "data/pv.sqlite", "assets": 1200, "pending_encode": 5 }
 }
@@ -335,7 +328,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `
   "mode": "hybrid",
   "effective_mode": "dense",
   "took_ms": 12,
-  "warnings": ["candle 后端不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"],
+  "warnings": ["第三方 embedding 不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"],
   "items": [ {
     "score": 0.87,
     "sources": ["dense"],
@@ -393,7 +386,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `
 | `POST /api/maintenance/vector/export` | 全量导出 JSONL。body `{"path":"…"}` 可指定路径，默认落在 `data/exports/vectors-<时间戳>.jsonl` |
 | `POST /api/maintenance/vector/import` | 从 JSONL 重建（搬家/灾备）。body `{"path":"…"}` |
 | `POST /api/maintenance/golden/verify` | 跑一次金标校验并落库，返回 `{golden, blocks_jobs}` |
-| `POST /api/maintenance/encoder/refresh` | 返回当前编码器状态（进程内 candle，无远端可探） |
+| `POST /api/maintenance/encoder/refresh` | 返回当前编码器状态（第三方服务地址、模型、维度、最近一次调用） |
 
 ---
 

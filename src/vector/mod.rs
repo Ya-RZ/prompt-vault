@@ -461,7 +461,7 @@ impl VectorStore {
 
     /// 稀疏查询（BM25）。
     ///
-    /// 现状：现有编码后端（candle）只产出稠密向量，不产出 BM25 稀疏向量，
+    /// 现状：第三方 embedding 只产出稠密向量，不产出 BM25 稀疏向量，
     /// 所以这条路径在正常检索里走不到 —— 保留它是为了 import/导出与将来接入 BM25。
     pub async fn search_sparse(
         &self,

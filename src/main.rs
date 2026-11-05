@@ -2,9 +2,8 @@
 //!
 //! 启动顺序（开发文档 §9.4）：
 //! 1. 打开 SQLite，并连接 Qdrant Server（集合不存在则创建）；
-//! 2. 解析模型目录并打印编码指纹与设备（candle 进程内，没有远端可探）；
-//! 3. 跑一次金标校验 —— **failed 就拒绝启动**；
-//!    `unsupported`（当前后端没有历史基线）只记录，不拦。
+//! 2. 读取配置，初始化第三方 embedding 客户端（OpenAI 兼容）；
+//! 3. 主动探测一次编码服务：失败只记录并让 health 报 DEGRADED，不阻止启动。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,27 +38,21 @@ struct Args {
     qdrant_collection: String,
     #[arg(long, env = "PV_MEDIA_DIR", default_value = "media")]
     media_dir: PathBuf,
-    /// candle 模型目录；不指定则按约定路径查找（显式指定必须有效）
-    #[arg(long, env = "PV_MODEL_DIR")]
-    model_dir: Option<PathBuf>,
-    /// candle 权重精度：f32（默认，最稳）/ f16 / bf16
-    #[arg(long, env = "PV_CANDLE_DTYPE", default_value = "f32")]
-    candle_dtype: String,
-    /// candle 计算设备：auto（默认，二进制带 cuda 且驱动可用时用 GPU，否则回落 CPU）/ cpu / cuda:0
-    #[arg(long, env = "PV_CANDLE_DEVICE", default_value = "auto")]
-    candle_device: String,
-    /// candle 的 HuggingFace 缓存目录（默认 <data-dir>/hf-cache）
-    #[arg(long, env = "PV_HF_CACHE_DIR")]
-    hf_cache_dir: Option<PathBuf>,
-    /// candle 的序列长度上限（默认 8192）
-    #[arg(long, env = "PV_MAX_LENGTH", default_value_t = 8192)]
-    max_length: usize,
-    /// 不加载模型，用确定性伪向量跑通链路（仅开发/冒烟；开了它 --model-dir 会被忽略）
+    /// 第三方 embedding 服务地址（OpenAI 兼容，含 /v1）；默认硅基流动
+    #[arg(long, env = "PV_EMBEDDING_BASE_URL")]
+    embedding_base_url: Option<String>,
+    /// embedding 模型名；默认 Qwen/Qwen3-VL-Embedding-8B
+    #[arg(long, env = "PV_EMBEDDING_MODEL")]
+    embedding_model: Option<String>,
+    /// embedding API Key（也可写在 config.toml 的 [embedding] api_key）
+    #[arg(long, env = "PV_EMBEDDING_API_KEY")]
+    embedding_api_key: Option<String>,
+    /// 不调用第三方服务，用确定性伪向量跑通链路（仅开发/冒烟）
     #[arg(long, env = "PV_MOCK", default_value_t = false)]
     mock: bool,
-    /// 向量维度：本项目固定 2048 不截断（开发文档 §4.2）
-    #[arg(long, env = "PV_DIM", default_value_t = 2048)]
-    dim: usize,
+    /// 向量维度；不指定时读 config.toml 的 [embedding] dimensions，再退到 4096
+    #[arg(long, env = "PV_DIM")]
+    dim: Option<usize>,
     /// 索引里是否启用稀疏（BM25）向量；只在首次建 shard 时生效
     #[arg(long, env = "PV_SPARSE", default_value_t = true, action = clap::ArgAction::Set)]
     sparse: bool,
@@ -72,24 +65,6 @@ struct Args {
     /// 单个媒体文件字节上限（开发文档 §12 第 8 条：按字节和像素双重设限）
     #[arg(long, env = "PV_MAX_MEDIA_BYTES", default_value_t = 268_435_456)]
     max_media_bytes: u64,
-    /// 图片宽高比上限（长边/短边，默认 8.0）；超过直接拒绝编码，0 表示不检查
-    #[arg(long, env = "PV_MAX_ASPECT_RATIO", default_value_t = 8.0)]
-    max_aspect_ratio: f64,
-    /// 图片像素安全区上限；不指定时按显存自动选择（详见 --help）
-    #[arg(
-        long,
-        env = "PV_MAX_PIXELS",
-        long_help = "图片像素安全区上限（超过则先等比缩小，再送去编码）。\n\n\
-不指定时按显卡显存自动选择：\n\
-  < 10 GiB   → 1,048,576（约 768 视觉 token；8GB 卡实测约 2.8 s/张）\n\
-  10–24 GiB  → 1,572,864（约 1280 token）\n\
-  ≥ 24 GiB   → 3,145,728（约 1536 token）\n\
-无 CUDA（CPU 推理）或拿不到显存信息时，取最保守的 1,048,576。\n\n\
-为什么按显存分档：像素上限过高会让显存贴顶，candle 的分配器会陷入\n\
-「清缓存 → 重试 → 同步」，单张耗时从 2.8 秒涨到 24 秒（实测 4060 Laptop 8GB）。\n\n\
-注意：该值会写进编码指纹，改动后已有索引必须全量重编码。"
-    )]
-    max_pixels: Option<u64>,
     /// 配置文件路径（默认按 `<exe>/config.toml`、当前目录 `config.toml` 查找）
     #[arg(long, env = "PV_CONFIG")]
     config: Option<PathBuf>,
@@ -135,22 +110,30 @@ async fn main() {
         qdrant_collection: args.qdrant_collection.clone(),
         thumb_dir: args.data_dir.join("thumbs"),
         export_dir: args.data_dir.join("exports"),
-        dim: args.dim,
+        dim: args
+            .dim
+            .or_else(|| file_cfg.embedding_dimensions())
+            .unwrap_or(4096),
         sparse_enabled: args.sparse,
         quant: QuantMode::parse(&args.quant),
         mock: args.mock,
-        model_dir: args.model_dir.clone(),
-        candle_dtype: args.candle_dtype.clone(),
-        candle_device: args.candle_device.clone(),
-        hf_cache_dir: args
-            .hf_cache_dir
+        embedding_base_url: args
+            .embedding_base_url
             .clone()
-            .unwrap_or_else(|| args.data_dir.join("hf-cache")),
-        max_length: args.max_length,
+            .or_else(|| file_cfg.embedding_base_url())
+            .unwrap_or_else(|| "https://api.siliconflow.cn/v1".to_string()),
+        embedding_model: args
+            .embedding_model
+            .clone()
+            .or_else(|| file_cfg.embedding_model())
+            .unwrap_or_else(|| "Qwen/Qwen3-VL-Embedding-8B".to_string()),
+        embedding_api_key: args
+            .embedding_api_key
+            .clone()
+            .or_else(|| file_cfg.embedding_api_key()),
+        embedding_timeout_secs: file_cfg.embedding_timeout_secs().unwrap_or(60),
         web_dir: args.web_dir.clone(),
         max_media_bytes: args.max_media_bytes,
-        max_aspect_ratio: args.max_aspect_ratio,
-        max_pixels: args.max_pixels,
         comfyui_output_dir: file_cfg.comfyui_output_dir(),
         import_copy: file_cfg.import_copy(),
     };
@@ -176,25 +159,24 @@ async fn main() {
         None => tracing::info!("未配置 ComfyUI output 目录（config.toml 的 [comfyui] output_dir）"),
     }
 
-    // ---- 启动自检：编码指纹 + 金标（开发文档 §9.4）----
-    // 侧车已移除：编码在进程内完成，这里只打印指纹与设备，
-    // 供排查「索引与当前模型是否同一空间」。
+    // ---- 启动自检：编码指纹 + 探测（开发文档 §9.4）----
+    // 编码已改为第三方 API：这里打印指纹，并主动探测一次连通性。
     tracing::info!(
         fingerprint = %state.encoder.fingerprint_hint(),
-        device = ?state.encoder.candle_encoder().map(|c| c.device_display()),
-        "candle 后端就绪（编码在进程内完成）"
+        provider = state.encoder.provider(),
+        model = ?state.encoder.model(),
+        "embedding 后端就绪（第三方 API）"
     );
 
-    let golden = state.encoder.verify_golden();
-    tracing::info!(status = %golden.status, detail = ?golden.detail, "金标校验结果");
-    let blocked = golden.status == "failed";
+    let golden = state.encoder.probe().await;
+    tracing::info!(status = %golden.status, detail = ?golden.detail, "金标探测结果");
     state.set_golden(golden.clone());
-    if blocked {
+    if golden.status == "failed" {
+        // 云端不可用不等于服务不能起：health 会显示 DEGRADED，导入/编码作业会被金标闸门拦住。
         eprintln!(
-            "金标校验未通过（status=failed），按开发文档 §9.4 拒绝启动。\n详情: {:?}",
-            golden.detail
+            "embedding 探测失败（status=failed）：{}；服务继续启动，但编码/导入作业会被拒绝",
+            golden.detail.clone().unwrap_or_default()
         );
-        std::process::exit(1);
     }
 
     let router = api::build_router().push(Router::with_path("{**path}").get(serve_frontend));
@@ -251,19 +233,17 @@ struct Flags {
 fn print_banner(state: &Arc<AppState>, flags: &Flags) {
     let sparse = if state.vectors.sparse_enabled() { "启用" } else { "关闭" };
     let index_fp = state.index_fingerprint().ok().flatten().unwrap_or_else(|| "(尚未写入)".into());
-    let encoder = state.encoder.candle_encoder();
-    let model_dir = encoder
-        .as_ref()
-        .map(|c| c.model_dir().display().to_string())
-        .unwrap_or_else(|| "(未配置)".to_string());
-    let device = encoder
-        .as_ref()
-        .map(|c| c.device_display())
-        .unwrap_or_else(|| "cpu".to_string());
+    let mock = state.encoder.is_mock();
+    let base_url = state.encoder.base_url().unwrap_or("(未配置)");
+    let model = state.encoder.model().unwrap_or("(未配置)");
     println!("──────────────────────────────────────────────");
     println!("prompt-vault {}  http://{}:{}", env!("CARGO_PKG_VERSION"), flags.host, flags.port);
-    println!("  编码后端 : candle（进程内）  device={device}");
-    println!("  模型目录 : {model_dir}");
+    println!(
+        "  编码后端 : {}",
+        if mock { "mock（伪向量）" } else { "第三方 embedding（OpenAI 兼容）" }
+    );
+    println!("  服务地址 : {base_url}");
+    println!("  模型     : {model}");
     println!("  SQLite   : {}", state.cfg.db_path.display());
     println!(
         "  向量索引 : {}  collection={}  dim={} 量化={} 稀疏={}",

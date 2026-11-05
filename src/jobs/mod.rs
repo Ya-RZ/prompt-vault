@@ -873,11 +873,12 @@ pub fn job_to_dto(job: &crate::db::JobRow, errors: Vec<crate::types::JobErrorDto
 
 /// 编码能力摘要（作业开始时记录到 message，便于事后归因）。
 pub fn encoder_capability_note(state: &Arc<AppState>) -> serde_json::Value {
-    let candle = state.encoder.candle_encoder();
     json!({
-        "mode": "candle",
-        "device": candle.as_ref().map(|c| c.device_label().to_string()),
-        "dtype": candle.as_ref().map(|c| c.dtype_name().to_string()),
+        "mode": if state.encoder.is_mock() { "mock" } else { "http" },
+        "provider": state.encoder.provider(),
+        "base_url": state.encoder.base_url(),
+        "model": state.encoder.model(),
+        "device": "cloud",
         "fingerprint": state.encoder.fingerprint_hint(),
         "vector_names": [VEC_IMAGE, VEC_TEXT],
         "sparse_enabled_in_index": state.vectors.sparse_enabled(),

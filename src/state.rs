@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use crate::db::{Db, META_INDEX_FINGERPRINT};
-use crate::encode::EncoderClient;
+use crate::encode::{EncoderClient, HttpEncoder, HttpEncoderConfig};
 use crate::error::{ApiError, ApiResult};
 use crate::jobs::JobManager;
 use crate::types::GoldenInfo;
@@ -28,26 +28,20 @@ pub struct Config {
     /// 是否在索引里启用稀疏（BM25）向量 —— 只在建 shard 时生效
     pub sparse_enabled: bool,
     pub quant: QuantMode,
-    /// `--mock`：不加载模型，用确定性伪向量跑通链路（仅开发/冒烟）
+    /// `--mock`：不调用第三方服务，用确定性伪向量跑通链路（仅开发/冒烟）
     pub mock: bool,
-    /// candle 模型目录（None = 按约定路径查找）
-    pub model_dir: Option<PathBuf>,
-    /// candle 权重精度（f32 / f16 / bf16）
-    pub candle_dtype: String,
-    /// candle 计算设备：auto（有 CUDA 就用）/ cpu / cuda:N
-    pub candle_device: String,
-    /// candle 的 HuggingFace 缓存根目录（HF_HOME）；不再写进模型目录
-    pub hf_cache_dir: PathBuf,
-    /// 序列长度上限（默认 8192）
-    pub max_length: usize,
+    /// 第三方 embedding 服务地址（OpenAI 兼容，如 `https://api.siliconflow.cn/v1`）
+    pub embedding_base_url: String,
+    /// embedding 模型名（如 `Qwen/Qwen3-VL-Embedding-8B`）
+    pub embedding_model: String,
+    /// embedding API Key（`config.toml` 的 `[embedding] api_key`）
+    pub embedding_api_key: Option<String>,
+    /// 单次 HTTP 请求超时（秒）
+    pub embedding_timeout_secs: u64,
     /// web/dist 的路径（开发期直接读盘；release 走 rust-embed）
     pub web_dir: PathBuf,
     /// 媒体文件大小上限（字节），超了直接拒（开发文档 §12 第 8 条）
     pub max_media_bytes: u64,
-    /// 图片宽高比上限（长边/短边）；超限直接拒绝编码（0 表示不检查）
-    pub max_aspect_ratio: f64,
-    /// 图片像素安全区上限；`None` = 按显存自动选择（见 candle::auto_max_pixels）
-    pub max_pixels: Option<u64>,
     /// ComfyUI 的 output 目录（`config.toml` 的 `[comfyui] output_dir`）：
     /// 导入作业不填 root 时默认扫这里
     pub comfyui_output_dir: Option<PathBuf>,
@@ -121,51 +115,45 @@ impl AppState {
             cfg.quant,
         )
         .await?;
-        // 编码只有一条真实路径：进程内 candle 加载本地模型。
+        // 编码走第三方 embedding API（OpenAI 兼容）。
         //
         // 两条不致命的退化路径（服务照常启动，health 报 DEGRADED）：
-        // - `--mock`：不加载模型，向量由 sha256 派生，只用于跑通链路；
-        // - 找不到模型：编码不可用，检索自动退化为纯词法。
-        // 模型目录在启动时解析，但**解析失败不再阻止启动** —— 用户可能只是还没下模型，
-        // 或者只想先用词法检索。
-        let candle = if cfg.mock {
-            tracing::warn!("--mock 模式：不加载模型，向量由 sha256 派生（仅用于链路验证）");
-            None
-        } else {
-            match crate::encode::candle::resolve_model_dir(cfg.model_dir.as_deref()) {
-                Ok(model_dir) => {
-                    let dtype = crate::encode::candle::parse_dtype(&cfg.candle_dtype);
+        // - `--mock`：不联网，向量由 sha256 派生，只用于跑通链路；
+        // - 没配 API Key / 客户端初始化失败：编码不可用，检索自动退化为纯词法。
+        let encoder = if cfg.mock {
+            tracing::warn!("--mock 模式：不调用第三方服务，向量由 sha256 派生（仅用于链路验证）");
+            EncoderClient::mock(cfg.dim)
+        } else if cfg.embedding_api_key.is_some() && !cfg.embedding_base_url.trim().is_empty() {
+            let http_cfg = HttpEncoderConfig {
+                base_url: cfg.embedding_base_url.clone(),
+                model: cfg.embedding_model.clone(),
+                api_key: cfg.embedding_api_key.clone().unwrap_or_default(),
+                dim: cfg.dim,
+                timeout_secs: cfg.embedding_timeout_secs,
+            };
+            let fingerprint = http_cfg.fingerprint();
+            match HttpEncoder::new(http_cfg) {
+                Ok(encoder) => {
                     tracing::info!(
-                        model_dir = %model_dir.display(),
-                        dtype = %cfg.candle_dtype,
-                        device = %cfg.candle_device,
-                        hf_cache = %cfg.hf_cache_dir.display(),
-                        max_length = cfg.max_length,
-                        "candle 后端已配置（权重将在首次编码时加载）"
+                        base_url = %cfg.embedding_base_url,
+                        model = %cfg.embedding_model,
+                        dim = cfg.dim,
+                        fingerprint = %fingerprint,
+                        "第三方 embedding 已配置"
                     );
-                    Some(std::sync::Arc::new(crate::encode::CandleEncoder::new(
-                        model_dir,
-                        crate::encode::candle::CandleOptions {
-                            cache_dir: cfg.hf_cache_dir.clone(),
-                            max_length: cfg.max_length,
-                            dtype,
-                            device: crate::encode::candle::DeviceSpec::parse(&cfg.candle_device),
-                            max_media_bytes: cfg.max_media_bytes,
-                            max_aspect_ratio: cfg.max_aspect_ratio,
-                            max_pixels: cfg.max_pixels,
-                        },
-                    )))
+                    EncoderClient::new(cfg.dim, Some(std::sync::Arc::new(encoder)), false)
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        error = %e.message,
-                        "找不到可用模型：编码不可用，检索将退化为纯词法；用 --model-dir 指定模型目录，或加 --mock 跑链路验证"
-                    );
-                    None
+                    tracing::error!(error = %e.message, "embedding 客户端初始化失败：编码不可用");
+                    EncoderClient::unconfigured(cfg.dim)
                 }
             }
+        } else {
+            tracing::warn!(
+                "未配置 embedding api_key：编码不可用，检索将退化为纯词法（在 config.toml 的 [embedding] 里填写）"
+            );
+            EncoderClient::unconfigured(cfg.dim)
         };
-        let encoder = EncoderClient::new(cfg.dim, candle, cfg.mock);
 
         Ok(Arc::new(Self {
             db,

@@ -85,22 +85,22 @@ pub async fn vector_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
     Ok(())
 }
 
-/// 金标校验（开发文档 §9）：candle 没有可复用的历史基线，恒为 unsupported，不假装通过。
+/// 金标校验（开发文档 §9）：主动探测第三方 embedding 服务；failed 时作业闸门会拦住。
 #[handler]
 pub async fn golden_verify(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = st(depot)?.clone();
-    let info: GoldenInfo = state.encoder.verify_golden();
+    let info: GoldenInfo = state.encoder.probe().await;
     state.set_golden(info.clone());
     let will_block = info.status == "failed";
     res.render(Json(serde_json::json!({
         "golden": info,
         "blocks_jobs": will_block,
-        "note": "status=failed 时导入/编码作业会被拒绝（开发文档 §9.4）；unsupported=当前后端没有历史基线"
+        "note": "status=failed 时导入/编码作业会被拒绝（开发文档 §9.4）；云端编码没有本地基线，只验证连通性与维度"
     })));
     Ok(())
 }
 
-/// 编码器状态刷新：candle 没有远端可探，返回当前进程内的模型/设备/加载状态。
+/// 编码器状态刷新：返回第三方服务地址、模型、维度与最近一次调用状态。
 #[handler]
 pub async fn encoder_refresh(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = st(depot)?.clone();

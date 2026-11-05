@@ -21,6 +21,8 @@ pub struct FileConfig {
     pub comfyui: ComfyuiSection,
     #[serde(default)]
     pub import: ImportSection,
+    #[serde(default)]
+    pub embedding: EmbeddingSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -34,6 +36,20 @@ pub struct ImportSection {
     /// `true`（默认）= 复制源文件进 media，源目录保持完整；
     /// `false` = 移动（导入后源文件消失，和旧行为一致）。
     pub copy: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct EmbeddingSection {
+    /// OpenAI 兼容服务地址（含 `/v1`），如 `https://api.siliconflow.cn/v1`
+    pub base_url: Option<String>,
+    /// 模型名，如 `Qwen/Qwen3-VL-Embedding-8B`
+    pub model: Option<String>,
+    /// API Key（明文放在本地 config.toml；注意文件权限，别提交进 git）
+    pub api_key: Option<String>,
+    /// 输出维度（硅基 Qwen3-VL-Embedding-8B 原生 4096，可截断到 2048）
+    pub dimensions: Option<usize>,
+    /// 单次请求超时（秒），默认 60
+    pub timeout_secs: Option<u64>,
 }
 
 impl FileConfig {
@@ -51,6 +67,33 @@ impl FileConfig {
     pub fn import_copy(&self) -> bool {
         self.import.copy.unwrap_or(true)
     }
+
+    pub fn embedding_base_url(&self) -> Option<String> {
+        non_empty(self.embedding.base_url.as_deref())
+    }
+
+    pub fn embedding_model(&self) -> Option<String> {
+        non_empty(self.embedding.model.as_deref())
+    }
+
+    pub fn embedding_api_key(&self) -> Option<String> {
+        non_empty(self.embedding.api_key.as_deref())
+    }
+
+    pub fn embedding_dimensions(&self) -> Option<usize> {
+        self.embedding.dimensions.filter(|d| *d > 0)
+    }
+
+    pub fn embedding_timeout_secs(&self) -> Option<u64> {
+        self.embedding.timeout_secs.filter(|s| *s >= 5)
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// 配置文件位置与「缺失是否算错误」。

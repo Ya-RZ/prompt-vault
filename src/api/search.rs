@@ -203,7 +203,7 @@ pub async fn similar_by_kind(
                 .ok_or_else(|| ApiError::encoder_error("编码器没有返回向量"))?;
             let Some((indices, values)) = outcome.sparse.clone() else {
                 return Err(ApiError::sparse_unavailable(
-                    "candle 后端不产出 BM25 稀疏向量，纯稀疏检索暂不可用；请用 mode=lexical 或 hybrid",
+                    "第三方 embedding 只产出稠密向量，不产出 BM25 稀疏向量；请用 mode=lexical 或 hybrid",
                 ));
             };
             let hits = state

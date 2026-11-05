@@ -13,7 +13,7 @@ main:
     # 推送时**只做代码检查**：不构建二进制、不跑测试、不做 Windows 交叉编译。
     # 要产物请走：tag_push（发布）或「手动编译」按钮（web_trigger_build）。
     #
-    # 注意：clippy 仍然需要编译全部依赖（candle 不小），缓存命中时约几分钟；
+    # 注意：clippy 需要编译全部依赖（依赖不少），缓存命中时约几分钟；
     # 省掉的是 release 构建 + 测试 + Windows 交叉编译 + 冒烟这几段。
     - name: 代码检查（clippy）
       runner:
@@ -42,7 +42,6 @@ main:
         - name: clippy（-D warnings）
           script: |
             set -eu
-            # 刻意不用 --all-features：那会打开 cuda，而普通节点没有 CUDA Toolkit
             cargo clippy --all-targets --locked -- -D warnings
 
 
@@ -283,8 +282,8 @@ $:
               - prompt-vault-linux-x86_64
               - prompt-vault-windows-x86_64.exe
 
-              运行：`./prompt-vault --model-dir <models/qwen3-vl-embedding-2b>`（进程内 candle 编码）
-              （侧车已移除，编码只走本地模型；模型权重需自行准备，不随产物分发）
+              运行：`./prompt-vault --config config.toml`（第三方 embedding，无需模型权重）
+              （config.toml 里填 embedding 的 base_url / model / api_key）
 
         - name: 上传附件
           image: cnbcool/attachments:latest
@@ -294,49 +293,3 @@ $:
               - release-assets/prompt-vault-linux-x86_64
               - release-assets/prompt-vault-windows-x86_64.exe
               - release-assets/SHA256SUMS
-
-# ---------------------------------------------------------------- CUDA 变体模板
-#
-# ⚠️ 现在是**注释状态**：candle 已经接进来了（进程内编码，侧车已移除），但默认构建**不开** cuda feature，
-#    所以下面的 job 现在编出来仍是纯 CPU 版。要出 CUDA 版时把这段接进 main.push 的数组即可
-#    （多条 pipeline 会并发执行，互不影响）；注意 candle 的 cuda 需要 `--features cuda`，
-#    并且 fastembed 的 candle 后端要打开对应 feature。
-#
-# ┌─ 关键认知：编译 CUDA 不需要 GPU ─────────────────────────────────────────┐
-# │ 只要有 nvcc（来自 *-devel 镜像）就能编出 CUDA 产物，普通 CPU 节点即可。  │
-# │ 需要显卡的只有两件事：① 在 CI 里跑 GPU 推理测试；② 运行产物。            │
-# │ 所以这里**必须用 cnb:arch:amd64**，不要用 cnb:arch:amd64:gpu ——         │
-# │ 后者是计费的 GPU 节点，对「只编译」是纯浪费。                            │
-# │ 参考：candle 官方 CI 也把 nvcc 的来源解耦成容器镜像（它租 GPU 机器只是  │
-# │ 为了跑测试，不是为了编译）。                                             │
-# └──────────────────────────────────────────────────────────────────────────┘
-#
-# 另一条必须做的：显式设 CUDA_COMPUTE_CAP。不设的话 candle 的构建依赖
-# （cudaforge / bindgen_cuda）会 fallback 去调 nvidia-smi 探测架构，在没有卡的
-# 机器上直接 panic —— 这正是官方 issue「panic without nvidia-smi」。
-#
-#     - name: 构建（CUDA，compile-only）
-#       runner:
-#         tags: cnb:arch:amd64            # ★ 普通 CPU 节点；不要用 :gpu 后缀（计费）
-#       docker:
-#         image: nvidia/cuda:13.0.2-devel-ubuntu24.04   # 不带 cudnn 的 devel 变体，镜像小一截；
-#                                                      # 若 candle 启用了 cudnn feature，再换 *-cudnn-devel
-#       env:
-#         CUDA_COMPUTE_CAP: "89"          # RTX 4060 = Ada = sm_89；安培 86，图灵 75，PTX 向前兼容
-#       stages:
-#         - name: 前端构建
-#           script: |
-#             set -eu
-#             apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config cmake git
-#             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
-#             . /root/.cargo/env
-#             cd web && pnpm install --frozen-lockfile && pnpm build
-#         - name: CUDA 构建
-#           script: |
-#             set -eu
-#             . /root/.cargo/env
-#             cargo build --release --locked --features cuda
-#             ls -lh target/release/prompt-vault
-#
-# 补充：这个 devel 镜像约 7~8 GB，拉取本身耗时，所以建议**按需触发**
-# （打 tag 时、或临时解除注释验证一次），不要挂在每次 push 上。
