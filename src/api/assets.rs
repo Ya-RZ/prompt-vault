@@ -177,11 +177,95 @@ pub async fn similar_assets(req: &mut Request, depot: &mut Depot, res: &mut Resp
     let state = st(depot)?.clone();
     let id = req.param::<i64>("id").ok_or_else(|| ApiError::bad_request("id 非法"))?;
     let k = req.query::<usize>("k").unwrap_or(20).clamp(1, 200);
-    let row = state.db.asset_must_exist(id)?;
+
+    // by=prompt / by=image：可重复（by=prompt&by=image）或逗号分隔；缺省保持旧行为（image）。
+    let raw = req.queries().get_vec("by").cloned().unwrap_or_default();
+    let mut by: Vec<String> = raw
+        .iter()
+        .flat_map(|s| s.split(','))
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if by.is_empty() {
+        by.push("image".to_string());
+    }
+    let by_prompt = by.iter().any(|s| s == "prompt");
+    let by_image = by.iter().any(|s| s == "image");
+    if !by_prompt && !by_image {
+        return Err(ApiError::bad_request("by 只支持 prompt / image（可多选）"));
+    }
+
     let engine = Engine::new(&state);
-    let resp = engine
+
+    // 只用提示词：不碰图片向量。
+    if by_prompt && !by_image {
+        let mut resp = engine.similar_by_prompts(id, k).await?;
+        resp.items.retain(|item| item.asset.id != id);
+        resp.total = resp.items.len();
+        for item in &mut resp.items {
+            item.sources = vec!["prompt".to_string()];
+        }
+        res.render(Json(resp));
+        return Ok(());
+    }
+
+    let row = state.db.asset_must_exist(id)?;
+    let mut resp = engine
         .search_image(None, Some(id), k, Vec::new(), Some(false), format!("<asset_id:{}>", row.id))
         .await?;
+    // 排除自身，并把来源标成 image（合并时提示词路标 prompt）
+    for item in &mut resp.items {
+        item.sources = vec!["image".to_string()];
+    }
+    resp.items.retain(|item| item.asset.id != id);
+    resp.total = resp.items.len();
+
+    // 混合：图片结果 + 提示词结果，按最高分合并、去重。
+    if by_prompt {
+        match engine.similar_by_prompts(id, k).await {
+            Ok(mut prompt_resp) => {
+                for item in &mut prompt_resp.items {
+                    item.sources = vec!["prompt".to_string()];
+                }
+                prompt_resp.items.retain(|item| item.asset.id != id);
+
+                let mut merged: std::collections::HashMap<i64, crate::types::SearchItem> =
+                    std::collections::HashMap::new();
+                for item in resp.items.drain(..).chain(prompt_resp.items.into_iter()) {
+                    let aid = item.asset.id;
+                    match merged.get_mut(&aid) {
+                        Some(existing) => {
+                            if item.score > existing.score {
+                                existing.score = item.score;
+                                existing.rank = item.rank;
+                            }
+                            for source in item.sources {
+                                if !existing.sources.contains(&source) {
+                                    existing.sources.push(source);
+                                }
+                            }
+                        }
+                        None => {
+                            merged.insert(aid, item);
+                        }
+                    }
+                }
+                let mut items: Vec<_> = merged.into_values().collect();
+                items.sort_by(|a, b| {
+                    b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                items.truncate(k);
+                resp.items = items;
+                resp.total = resp.items.len();
+                resp.effective_mode = "image+prompt".to_string();
+                resp.warnings.push("已合并图片与提示词两路，按最高分排序".to_string());
+            }
+            Err(e) => resp
+                .warnings
+                .push(format!("提示词路径失败，仅返回图片结果: {e}")),
+        }
+    }
+
     res.render(Json(resp));
     Ok(())
 }

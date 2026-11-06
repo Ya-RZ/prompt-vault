@@ -282,6 +282,8 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 
 ### `POST /api/assets/{id}/prompts`
 
+> Web 界面已移除「添加提示词」入口（提示词改为从 PNG 元数据读取）；接口保留给脚本/兼容调用。
+
 ```json
 { "text": "一只在窗台上睡觉的橘猫", "role": "caption", "encode": true }
 ```
@@ -302,9 +304,15 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 删 SQLite 行（级联 prompt/tag）+ 删 Qdrant 点（稠密与稀疏**两路**，开发文档 §13 第 7 条）
 + 删媒体文件（`?keep_file=true` 可保留）。→ `{ "deleted": true, "id": 1, "vector_deleted": true, "file_deleted": false }`
 
-### `GET /api/assets/{id}/similar?k=20&mode=dense`
+### `GET /api/assets/{id}/similar?k=20&by=prompt,image`
 
-→ 与 `/api/search/image` 相同结构。
+按**提示词**或**图片**或两者合并查找相似资产：
+
+- `by` 可重复（`by=prompt&by=image`）或逗号分隔；缺省 `image`（兼容旧调用）
+- `prompt`：取该资产的 `role=positive` 提示词（没有则取全部）编码后检索，命中映射回资产
+- `image`：用该资产已有的图片向量检索
+- 两者都选：按最高分合并、去重，`sources` 同时含 `prompt` / `image`
+- 结果**排除自身**；返回结构与 `/api/search/image` 相同
 
 ### `GET /api/prompts/{id}/similar?k=20`
 

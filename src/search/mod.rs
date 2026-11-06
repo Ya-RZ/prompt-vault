@@ -303,6 +303,80 @@ impl<'a> Engine<'a> {
         Ok(out)
     }
 
+    /// 按资产的提示词找相似资产（`GET /api/assets/{id}/similar?by=prompt`）。
+    ///
+    /// 优先用 `role=positive` 的提示词；没有就退回该资产的全部提示词。
+    pub async fn similar_by_prompts(&self, asset_id: i64, k: usize) -> ApiResult<SearchResponse> {
+        let started = std::time::Instant::now();
+        let mut warnings: Vec<String> = Vec::new();
+        if !self.state.encoder.is_available() {
+            return Err(ApiError::encoder_error(
+                "编码不可用：按提示词找相似需要先把提示词编码成向量",
+            ));
+        }
+        if !self.state.spaces_are_consistent(&mut warnings)? {
+            return Err(ApiError::fingerprint_mismatch(
+                "编码指纹与索引指纹不一致，禁止检索（开发文档 §9.3）",
+            ));
+        }
+
+        let _asset = self.state.db.asset_must_exist(asset_id)?;
+        let prompts = self.state.db.prompts_for(asset_id)?;
+        if prompts.is_empty() {
+            return Err(ApiError::conflict(
+                "该资产没有提示词，无法按提示词找相似（先回填或编码提示词）",
+            ));
+        }
+        let texts: Vec<(i64, String)> = match prompts.iter().find(|p| p.role == "positive") {
+            Some(p) => vec![(p.id, p.text.clone())],
+            None => prompts.iter().map(|p| (p.id, p.text.clone())).collect(),
+        };
+
+        let items: Vec<EmbedInputItem> = texts
+            .iter()
+            .map(|(_, text)| EmbedInputItem {
+                text: Some(text.clone()),
+                image: None,
+            })
+            .collect();
+        let outcomes = self.state.encoder.embed(items).await?;
+
+        let mut candidates: HashMap<i64, Candidate> = HashMap::new();
+        for (outcome, (pid, _)) in outcomes.iter().zip(texts.iter()) {
+            let hits = self
+                .state
+                .vectors
+                .search_dense(VEC_TEXT, &outcome.dense, k + 5, None, true, Some(2.0))
+                .await?;
+            let list: Vec<(i64, f64, Option<i64>)> = hits
+                .iter()
+                .filter_map(|(row_id, score, payload)| {
+                    let prompt_id = payload_row_id(payload).unwrap_or(*row_id);
+                    if prompt_id == *pid {
+                        return None;
+                    }
+                    let prompt = self.state.db.get_prompt(prompt_id).ok().flatten()?;
+                    if prompt.asset_id == asset_id {
+                        return None;
+                    }
+                    Some((prompt.asset_id, *score as f64, Some(prompt_id)))
+                })
+                .collect();
+            merge_ranked(&mut candidates, "dense", &list);
+        }
+
+        let query = SearchQuery {
+            q: format!("<asset_prompt:{asset_id}>"),
+            k,
+            mode: "dense".into(),
+            tags: Vec::new(),
+            nsfw: Some(false),
+            kind: None,
+            min_score: None,
+        };
+        self.finish(query, candidates, "prompt".into(), warnings, started).await
+    }
+
     /// 纯词法检索（调试口）
     pub fn lexical(&self, q: &str, k: usize) -> ApiResult<Vec<LexicalItem>> {
         let hits = self.state.db.lexical_search(q, k)?;

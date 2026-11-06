@@ -3,8 +3,8 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Checkbox,
   Descriptions,
-  Divider,
   Drawer,
   Empty,
   Input,
@@ -22,7 +22,6 @@ import {
 import { useCallback, useEffect, useState } from 'react';
 
 import {
-  createAssetPrompt,
   deleteAsset,
   describeError,
   encodeAsset,
@@ -163,12 +162,9 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
   const [tagDraft, setTagDraft] = useState<string[]>([]);
   const [pathDraft, setPathDraft] = useState('');
 
-  // 新增提示词
-  const [promptText, setPromptText] = useState('');
-  const [promptRole, setPromptRole] = useState('caption');
-  const [promptEncode, setPromptEncode] = useState(true);
 
   // 相似资产
+  const [similarBy, setSimilarBy] = useState<Array<'prompt' | 'image'>>(['prompt']);
   const [similar, setSimilar] = useState<SearchHit[] | null>(null);
   const [similarLoading, setSimilarLoading] = useState(false);
   const [similarError, setSimilarError] = useState<unknown>(null);
@@ -190,8 +186,6 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
     setRevealed(false);
     setSimilar(null);
     setSimilarError(null);
-    setPromptText('');
-    setPromptEncode(true);
   }, [assetId]);
 
   useEffect(() => {
@@ -258,31 +252,6 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
     }
   };
 
-  const handleAddPrompt = async () => {
-    if (assetId === null) return;
-    const text = promptText.trim();
-    if (!text) {
-      message.warning('提示词内容不能为空');
-      return;
-    }
-    setSaving(true);
-    try {
-      await createAssetPrompt(assetId, { text, role: promptRole.trim() || 'caption', encode: promptEncode });
-      setPromptText('');
-      message.success(promptEncode ? '提示词已添加并编码' : '提示词已添加');
-      reload();
-      onMutated();
-    } catch (cause) {
-      // 契约 §4：encode 失败时提示词已落库，可用 /api/jobs 补编码
-      const presentation = describeError(cause);
-      message.warning(`提示词可能已落库，但编码失败：${presentation.title}`);
-      reload();
-      onMutated();
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleDelete = async () => {
     if (assetId === null) return;
     setSaving(true);
@@ -307,7 +276,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
     setSimilarLoading(true);
     setSimilarError(null);
     try {
-      const response = await getSimilarAssets(assetId, 12, 'dense');
+      const response = await getSimilarAssets(assetId, 12, similarBy);
       setSimilar(response.items ?? []);
     } catch (cause) {
       setSimilarError(cause);
@@ -535,34 +504,6 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
         ))
       )}
 
-      <Divider style={{ margin: '4px 0' }}>新增提示词</Divider>
-      <Space size={8} wrap>
-        <Input
-          style={{ width: 160 }}
-          value={promptRole}
-          onChange={(event) => setPromptRole(event.target.value)}
-          placeholder="role，如 caption"
-          addonBefore="role"
-        />
-        <Space size={6}>
-          <Text>同步编码</Text>
-          <Switch checked={promptEncode} onChange={setPromptEncode} />
-        </Space>
-      </Space>
-      <Input.TextArea
-        rows={3}
-        value={promptText}
-        onChange={(event) => setPromptText(event.target.value)}
-        placeholder="例如：一只在窗台上睡觉的橘猫"
-      />
-      <Button type="primary" loading={saving} onClick={handleAddPrompt}>
-        添加提示词
-      </Button>
-      {promptEncode ? (
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          编码失败时会返回 ENCODER_* 错误，但提示词已落库，可稍后用作业补编码。
-        </Text>
-      ) : null}
     </Space>
   ) : null;
 
@@ -604,12 +545,20 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
 
   const similarTab = (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      <Space>
-        <Button loading={similarLoading} onClick={handleLoadSimilar}>
-          查找相似资产（k=12, dense）
+      <Space wrap>
+        <Checkbox.Group
+          options={[
+            { label: '提示词', value: 'prompt' },
+            { label: '图片', value: 'image' },
+          ]}
+          value={similarBy}
+          onChange={(values) => setSimilarBy(values as Array<'prompt' | 'image'>)}
+        />
+        <Button loading={similarLoading} disabled={similarBy.length === 0} onClick={handleLoadSimilar}>
+          查找相似资产（k=12）
         </Button>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          基于向量相似度
+          可多选，按最高分合并排序
         </Text>
       </Space>
       {similarError ? <ErrorState error={similarError} context="相似资产查询失败" /> : null}

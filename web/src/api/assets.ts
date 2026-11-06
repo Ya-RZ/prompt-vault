@@ -73,14 +73,17 @@ export function deleteAsset(
 }
 
 /** GET /api/assets/{id}/similar?k=&mode= —— 与 /api/search/image 同构 */
+export type SimilarBy = 'prompt' | 'image';
+
+/** GET /api/assets/{id}/similar?k=&by= —— by 可多选，按最高分合并 */
 export function getSimilarAssets(
   id: number,
   k: number,
-  mode?: 'dense' | 'sparse',
+  by: SimilarBy[] = ['image'],
   signal?: AbortSignal,
 ): Promise<SearchResponse> {
   return apiRequest<SearchResponse>(`/assets/${id}/similar`, {
-    query: { k, mode },
+    query: { k, by },
     signal,
   });
 }
