@@ -118,7 +118,9 @@ impl HttpEncoder {
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             return Err(ApiError::encoder_error(format!(
-                "embedding API 返回 {status}: {}",
+                "embedding API 返回 {status}（model={}，dimensions={}）: {}",
+                self.cfg.model,
+                self.cfg.dim,
                 truncate(&text, 300)
             )));
         }
