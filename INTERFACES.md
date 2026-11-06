@@ -12,14 +12,14 @@
 
 | 项 | 约定 |
 | --- | --- |
-| 监听 | `127.0.0.1:8918`（默认；`--port` 覆盖）。编码走 HTTPS 调用第三方服务，没有本地推理进程 |
+| 监听 | `config.toml` 的 `[server] host/port`（默认 `127.0.0.1:8918`）。编码走 HTTPS 调用第三方服务 |
 | 编码 | 请求/响应统一 `application/json; charset=utf-8` |
 | 时间 | RFC3339 UTC 字符串，例 `"2026-10-16T12:00:00Z"` |
 | 分页 | 请求 `?page=1&page_size=50`（`page_size` 上限 200）→ 响应 `{ "items": [...], "total": 123, "page": 1, "page_size": 50 }` |
 | 错误 | HTTP 4xx/5xx + `{ "error": { "code": "SNAKE_CASE", "message": "人话", "detail": {...} } }` |
 | 媒体 | `GET /media/{**path}` —— **挂在根路由**，不在 `/api` 下（开发文档 §7.1 明确踩过坑） |
 | 前端 | `GET /` 返回打包进二进制的 `index.html`；未知非 `/api`、非 `/media` 路径回落 `index.html`（SPA 路由） |
-| 静态资源 | `/assets/*`（前端 JS/CSS）：**磁盘优先**（`--web-dir`，默认 `web/dist`，开发期改完前端不用重编译），磁盘没有就回落到 `rust-embed` 打进二进制的产物；前端路由（无扩展名的路径）回落 `index.html` |
+| 静态资源 | `/assets/*`（前端 JS/CSS）：**磁盘优先**（`[web] dir`，默认 `web/dist`，开发期改完前端不用重编译），磁盘没有就回落到 `rust-embed` 打进二进制的产物；前端路由（无扩展名的路径）回落 `index.html` |
 | 缩略图 | `/media/{**path}?w=256` 按需生成，缓存到 `data/thumbs/`；`/media` 支持 `Range`（`<video>` 拖进度条实测 206） |
 | 路径 | **存储层（SQLite）不保存绝对路径**：一律存相对「可执行文件目录」的路径，绝对路径在读写边界现场换算。这样整个 `data/` 可以整包搬到别的机器或盘符 |
 
@@ -31,7 +31,7 @@
 | `NOT_FOUND` | 404 | 资产/作业/提示词不存在 |
 | `ENCODER_UNREACHABLE` | 503 | 编码不可用：没有模型、模型加载失败，或该接口必须有向量能力（`/api/health.encoder.reachable=false`） |
 | `FINGERPRINT_MISMATCH` | 409 | 写入被拒：向量指纹与索引指纹不一致（**拒绝，不是警告**，开发文档 §13 第 4 条） |
-| `PAYLOAD_TOO_LARGE` | 413 | 图片超过 `--max-media-bytes` 上限 |
+| `PAYLOAD_TOO_LARGE` | 413 | 图片超过 `[media] max_bytes` 上限 |
 | `ENCODER_ERROR` | 502 | 编码过程失败（模型加载/推理报错） |
 | `GOLDEN_FAILED` | 409 | 金标校验不通过，禁止开始导入/编码作业（当前后端恒 `unsupported`，不会走到这里） |
 | `SPARSE_UNAVAILABLE` | 501 | 稀疏路不可用（索引未启用稀疏，或编码器不产出 `sparse`）——**显式失败，不假装成功** |
@@ -49,10 +49,10 @@
 
 | 项 | 来源 |
 | --- | --- |
-| 服务地址 | `config.toml` 的 `[embedding] base_url`，或 `--embedding-base-url` / `PV_EMBEDDING_BASE_URL` |
-| 模型 | `[embedding] model`，或 `--embedding-model` / `PV_EMBEDDING_MODEL` |
-| API Key | `[embedding] api_key`，或 `--embedding-api-key` / `PV_EMBEDDING_API_KEY` |
-| 维度 | `[embedding] dimensions`（默认 4096），或 `--dim` / `PV_DIM` |
+| 服务地址 | `[embedding] base_url` |
+| 模型 | `[embedding] model` |
+| API Key | `[embedding] api_key` |
+| 维度 | `[embedding] dimensions`（默认 4096） |
 | 超时 | `[embedding] timeout_secs`（默认 60） |
 | 指纹 | `http\|<base_url>\|<model>\|dim=4096\|norm=l2\|v1` |
 
@@ -70,7 +70,7 @@
 | 配了 key 且探测成功 | `/api/health` → `READY`，`encoder.reachable=true` |
 | 没配 key | 启动照常（warn）；`DEGRADED`、`reachable=false`；文本检索退化为纯词法；`mode=dense` / 以图搜图返回 `ENCODER_UNREACHABLE` |
 | key 错 / 网络不通 | 启动探测 `failed`（**不阻止启动**）；health `DEGRADED`；导入/编码作业被金标闸门拒绝 |
-| `--mock` | 不联网，sha256 派生伪向量（指纹 `mock\|dim=4096\|v1\|device=cpu`），仅用于链路验证 |
+| `[dev] mock = true` | 不联网，sha256 派生伪向量（指纹 `mock\|dim=4096\|v1\|device=cpu`），仅用于链路验证 |
 
 ### 1.4 硬规则（开发文档 §10 铁律）
 
@@ -87,7 +87,7 @@
 | --- | --- |
 | `passed` | 调用成功且返回维度 = 配置维度 |
 | `failed` | 调用失败或维度不符（作业闸门拦截） |
-| `unsupported` | `--mock` |
+| `unsupported` | `[dev] mock = true` |
 | `unchecked` | 未配置服务，或还没发起过调用 |
 
 云端没有本地基线，**不做余弦比对**；`/api/maintenance/golden/verify` 可手动重探。
@@ -124,7 +124,7 @@ meta(key TEXT PK, value TEXT)   -- index_fingerprint / schema_version / last_gol
 **索引与向量同生命周期**（开发文档 §8）：向量的指纹存在 `asset_vector`/`prompt_vector` 里，
 向量本体在 Qdrant Server（默认 `http://127.0.0.1:6333`，集合名 `pv`），SQLite 只留指纹。
 
-Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `PV_QDRANT_COLLECTION` 覆盖）：
+Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆盖）：
 
 | 点 | 说明 |
 | --- | --- |
@@ -177,15 +177,15 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `
 
 - `status`：`READY` | `DEGRADED`（编码不可用、金标失败、指纹不一致）。
   **没有模型不阻止启动**（编码不可用 + 检索退化），但要显式暴露。
-- `encoder.reachable`：编码能力是否可用（有模型或 `--mock`）。
-- `encoder.mock`：是否 `--mock` 模式（见 §3.1）。
+- `encoder.reachable`：编码能力是否可用（配置了服务或 `[dev] mock = true`）。
+- `encoder.mock`：是否 `[dev] mock = true`（见 §3.1）。
 - `encoder.loaded`：权重是否已真正加载（懒加载，首次编码后才 `true`）。
 - `encoder` 没有 `mode` / `url` 字段：编码只有进程内一条路径。
 - `golden.status`：`passed` | `failed` | `unsupported` | `unchecked`（当前后端恒 `unsupported`）。
 
-### 3.1 `--mock` 开关（开发期）
+### 3.1 mock 开关（开发期）
 
-`--mock`（或 `PV_MOCK=true`）时，主服务**不加载模型**，用内置确定性伪向量
+`[dev] mock = true` 时，主服务**不调用第三方服务**，用内置确定性伪向量
 （sha256 派生、L2 归一化、2048 维、`fingerprint = "mock|dim=2048|v1|device=cpu"`），
 `encoder.mock=true`。用于在没有模型的环境验证「导入 → 编码 → 入库 → 检索 → 前端」全链路。
 前端页头据此显示 mock 标记。
@@ -229,7 +229,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `
 
 `multipart/form-data`，字段名 `file`。落盘 → 按 `<media>/<hash 前两位>/` 归档 → 建资产（未编码）→ 返回 `201` + `AssetDto`。
 
-- 大小上限由 `--max-media-bytes` 控制（默认 256 MB），超限 → `413 PAYLOAD_TOO_LARGE`
+- 大小上限由 `[media] max_bytes` 控制（默认 256 MB），超限 → `413 PAYLOAD_TOO_LARGE`
 - 同一 blake3 hash 已存在 → 直接返回已有资产（不重复落盘）
 - kind 判定：扩展名 + 能否读出图片/视频尺寸；判不出的归 `other`
 
@@ -484,11 +484,11 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `--qdrant-collection` / `
 | 2 | `golden` 字段展示 `unsupported` 并说明「当前后端没有历史基线」 |
 | 3 | 同一张图连续编码两次，余弦 1.000000（模型推理确定性）；缺模型时退化为词法而不报错 |
 | 4 | 指纹不一致时 `POST /api/assets/{id}/prompts` 等写入返回 `409 FINGERPRINT_MISMATCH` |
-| 5 | 超过 `--max-media-bytes` 的图返回 413 `PAYLOAD_TOO_LARGE` |
+| 5 | 超过 `[media] max_bytes` 的图返回 413 `PAYLOAD_TOO_LARGE` |
 | 6 | `pause` 后 `resume` 不重复编码（`cursor` + `asset_vector.fingerprint` 双重判定） |
 | 7 | `DELETE /api/assets/{id}` 后稠密/稀疏两路都不再返回该点 |
 | 8 | 重启后 `/api/health` 正常、数据可查、指纹不变 |
-| 9 | 用 `--qdrant-url` 连上 Qdrant，集合不存在时自动创建（`image`/`text` + 可选 `sparse_*`），写入后检索可命中 |
+| 9 | 按 `[qdrant] url` 连上 Qdrant，集合不存在时自动创建（`image`/`text` + 可选 `sparse_*`），写入后检索可命中 |
 | 11/12 | **不在本轮范围**（用户明确：不准备覆盖语料、不运行模型） |
 
 ---

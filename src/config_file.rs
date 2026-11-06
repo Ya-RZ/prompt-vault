@@ -18,11 +18,74 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 pub struct FileConfig {
     #[serde(default)]
+    pub server: ServerSection,
+    #[serde(default)]
+    pub data: DataSection,
+    #[serde(default)]
+    pub media: MediaSection,
+    #[serde(default)]
+    pub qdrant: QdrantSection,
+    #[serde(default)]
+    pub index: IndexSection,
+    #[serde(default)]
+    pub embedding: EmbeddingSection,
+    #[serde(default)]
     pub comfyui: ComfyuiSection,
     #[serde(default)]
     pub import: ImportSection,
     #[serde(default)]
-    pub embedding: EmbeddingSection,
+    pub web: WebSection,
+    #[serde(default)]
+    pub dev: DevSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ServerSection {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DataSection {
+    /// 数据目录（SQLite / 缩略图 / 导出）
+    pub dir: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct MediaSection {
+    /// 媒体库目录（导入后的文件归档在这里）
+    pub dir: Option<String>,
+    /// 单个媒体文件字节上限
+    pub max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct QdrantSection {
+    /// gRPC 地址（默认 6334；填 6333 会自动转换）
+    pub url: Option<String>,
+    pub collection: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct IndexSection {
+    /// 是否启用 BM25 稀疏向量（只在建集合时生效）
+    pub sparse: Option<bool>,
+    /// `scalar` | `turbo4` | `off`
+    pub quantization: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct EmbeddingSection {
+    /// OpenAI 兼容服务地址（含 `/v1`）
+    pub base_url: Option<String>,
+    /// 模型名
+    pub model: Option<String>,
+    /// API Key（明文保存在本地；不要提交进 git）
+    pub api_key: Option<String>,
+    /// 输出维度（必须与 Qdrant 集合一致）
+    pub dimensions: Option<usize>,
+    /// 单次 HTTP 请求超时（秒）
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -33,26 +96,73 @@ pub struct ComfyuiSection {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ImportSection {
-    /// `true`（默认）= 复制源文件进 media，源目录保持完整；
-    /// `false` = 移动（导入后源文件消失，和旧行为一致）。
+    /// `true`（默认）= 复制源文件进 media；`false` = 移动。
     pub copy: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct EmbeddingSection {
-    /// OpenAI 兼容服务地址（含 `/v1`），如 `https://api.siliconflow.cn/v1`
-    pub base_url: Option<String>,
-    /// 模型名，如 `Qwen/Qwen3-VL-Embedding-8B`
-    pub model: Option<String>,
-    /// API Key（明文放在本地 config.toml；注意文件权限，别提交进 git）
-    pub api_key: Option<String>,
-    /// 输出维度（硅基 Qwen3-VL-Embedding-8B 原生 4096，可截断到 2048）
-    pub dimensions: Option<usize>,
-    /// 单次请求超时（秒），默认 60
-    pub timeout_secs: Option<u64>,
+pub struct WebSection {
+    /// 前端产物目录（开发期读盘；release 走内嵌产物）
+    pub dir: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DevSection {
+    /// 不调用第三方服务，用确定性伪向量跑通链路（仅开发/冒烟）
+    pub mock: Option<bool>,
 }
 
 impl FileConfig {
+    pub fn host(&self) -> String {
+        non_empty(self.server.host.as_deref()).unwrap_or_else(|| "127.0.0.1".to_string())
+    }
+
+    pub fn port(&self) -> u16 {
+        self.server.port.unwrap_or(8918)
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        PathBuf::from(non_empty(self.data.dir.as_deref()).unwrap_or_else(|| "data".to_string()))
+    }
+
+    pub fn media_dir(&self) -> PathBuf {
+        PathBuf::from(non_empty(self.media.dir.as_deref()).unwrap_or_else(|| "media".to_string()))
+    }
+
+    pub fn max_media_bytes(&self) -> u64 {
+        self.media.max_bytes.unwrap_or(268_435_456)
+    }
+
+    pub fn qdrant_url(&self) -> String {
+        non_empty(self.qdrant.url.as_deref())
+            .unwrap_or_else(|| "http://127.0.0.1:6334".to_string())
+    }
+
+    pub fn qdrant_collection(&self) -> String {
+        non_empty(self.qdrant.collection.as_deref()).unwrap_or_else(|| "pv".to_string())
+    }
+
+    pub fn sparse(&self) -> bool {
+        self.index.sparse.unwrap_or(true)
+    }
+
+    pub fn quantization(&self) -> String {
+        non_empty(self.index.quantization.as_deref()).unwrap_or_else(|| "scalar".to_string())
+    }
+
+    /// 向量维度：`[embedding] dimensions`，再退到 4096。
+    pub fn dim(&self) -> usize {
+        self.embedding.dimensions.filter(|d| *d > 0).unwrap_or(4096)
+    }
+
+    pub fn web_dir(&self) -> PathBuf {
+        PathBuf::from(non_empty(self.web.dir.as_deref()).unwrap_or_else(|| "web/dist".to_string()))
+    }
+
+    pub fn mock(&self) -> bool {
+        self.dev.mock.unwrap_or(false)
+    }
+
     /// 规范化后的 ComfyUI output 目录；空串/纯空白视同未配置。
     pub fn comfyui_output_dir(&self) -> Option<PathBuf> {
         self.comfyui
@@ -80,10 +190,6 @@ impl FileConfig {
         non_empty(self.embedding.api_key.as_deref())
     }
 
-    pub fn embedding_dimensions(&self) -> Option<usize> {
-        self.embedding.dimensions.filter(|d| *d > 0)
-    }
-
     pub fn embedding_timeout_secs(&self) -> Option<u64> {
         self.embedding.timeout_secs.filter(|s| *s >= 5)
     }
@@ -99,29 +205,57 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 /// 配置文件模板：首次启动时生成，填好再重新运行。
 pub const TEMPLATE: &str = r#"# prompt-vault 配置文件
 #
-# 首次启动自动生成。填写下面的 [embedding] 后重新运行即可。
+# 首次启动自动生成。填写 [embedding] 的 api_key 后重新运行即可。
+# 所有配置都在这个文件里，命令行只需要 --config（指定本文件路径）。
+
+[server]
+host = "127.0.0.1"
+port = 8918
+
+[data]
+# SQLite / 缩略图 / 导出
+dir = "data"
+
+[media]
+# 导入后的文件归档目录
+dir = "media"
+# 单个媒体文件字节上限（256 MB）
+max_bytes = 268435456
+
+[qdrant]
+# gRPC 地址（填 6333 会自动换成 6334）
+url = "http://127.0.0.1:6334"
+collection = "pv"
+
+[index]
+# 是否启用 BM25 稀疏向量（只在建集合时生效）
+sparse = true
+# scalar | turbo4 | off
+quantization = "scalar"
 
 [embedding]
-# OpenAI 兼容的 embedding 服务地址（含 /v1）
 base_url = "https://api.siliconflow.cn/v1"
-# 模型名
 model = "Qwen/Qwen3-VL-Embedding-8B"
-# API Key（明文保存在本文件；不要提交进 git）
 api_key = ""
-# 向量维度（Qwen3-VL-Embedding-8B 原生 4096）
+# 向量维度：必须与 Qdrant 集合一致（原生 4096，可选 2048）
 dimensions = 4096
-# 单次 HTTP 请求超时（秒）
 timeout_secs = 60
 
 [comfyui]
-# ComfyUI 的 output 目录：导入作业不填 root 时默认扫这里。
-# 绝对路径原样使用；相对路径按可执行文件目录解析。
+# 导入作业不填 root 时默认扫这里
 # output_dir = "D:/ComfyUI/output"
 
 [import]
-# true（默认）= 复制源文件进 media，源目录保持完整；
-# false = 移动（导入后源文件消失）。
+# true = 复制源文件进 media；false = 移动
 copy = true
+
+[web]
+# 前端产物目录（开发期读盘；release 用内嵌产物）
+dir = "web/dist"
+
+[dev]
+# 不调用第三方服务，用伪向量跑链路（仅开发/冒烟）
+mock = false
 "#;
 
 /// 候选位置，按优先级：显式指定 → PV_CONFIG → 可执行文件目录 → 当前目录。

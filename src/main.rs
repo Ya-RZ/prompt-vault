@@ -23,48 +23,6 @@ use prompt_vault::vector::QuantMode;
 #[derive(Parser, Debug)]
 #[command(name = "prompt-vault", version, about = "本地提示词 / 图片资产库：Rust 主服务")]
 struct Args {
-    #[arg(long, env = "PV_HOST", default_value = "127.0.0.1")]
-    host: String,
-    #[arg(long, env = "PV_PORT", default_value_t = 8918)]
-    port: u16,
-    #[arg(long, env = "PV_DATA_DIR", default_value = "data")]
-    data_dir: PathBuf,
-    /// Qdrant 服务地址。客户端走 gRPC（默认端口 6334）；
-    /// 填 REST 端口 6333 时会自动换成 6334。
-    #[arg(long, env = "PV_QDRANT_URL", default_value = "http://127.0.0.1:6334")]
-    qdrant_url: String,
-    /// Qdrant 集合名
-    #[arg(long, env = "PV_QDRANT_COLLECTION", default_value = "pv")]
-    qdrant_collection: String,
-    #[arg(long, env = "PV_MEDIA_DIR", default_value = "media")]
-    media_dir: PathBuf,
-    /// 第三方 embedding 服务地址（OpenAI 兼容，含 /v1）；默认硅基流动
-    #[arg(long, env = "PV_EMBEDDING_BASE_URL")]
-    embedding_base_url: Option<String>,
-    /// embedding 模型名；默认 Qwen/Qwen3-VL-Embedding-8B
-    #[arg(long, env = "PV_EMBEDDING_MODEL")]
-    embedding_model: Option<String>,
-    /// embedding API Key（也可写在 config.toml 的 [embedding] api_key）
-    #[arg(long, env = "PV_EMBEDDING_API_KEY")]
-    embedding_api_key: Option<String>,
-    /// 不调用第三方服务，用确定性伪向量跑通链路（仅开发/冒烟）
-    #[arg(long, env = "PV_MOCK", default_value_t = false)]
-    mock: bool,
-    /// 向量维度；不指定时读 config.toml 的 [embedding] dimensions，再退到 4096
-    #[arg(long, env = "PV_DIM")]
-    dim: Option<usize>,
-    /// 索引里是否启用稀疏（BM25）向量；只在首次建 shard 时生效
-    #[arg(long, env = "PV_SPARSE", default_value_t = true, action = clap::ArgAction::Set)]
-    sparse: bool,
-    /// 量化：scalar（默认，int8）| turbo4 | off
-    #[arg(long, env = "PV_QUANT", default_value = "scalar")]
-    quant: String,
-    /// 前端产物目录（web/dist）
-    #[arg(long, env = "PV_WEB_DIR", default_value = "web/dist")]
-    web_dir: PathBuf,
-    /// 单个媒体文件字节上限（开发文档 §12 第 8 条：按字节和像素双重设限）
-    #[arg(long, env = "PV_MAX_MEDIA_BYTES", default_value_t = 268_435_456)]
-    max_media_bytes: u64,
     /// 配置文件路径（默认按 `<exe>/config.toml`、当前目录 `config.toml` 查找）
     #[arg(long, env = "PV_CONFIG")]
     config: Option<PathBuf>,
@@ -105,49 +63,40 @@ async fn main() {
         }
     };
 
-    let flags = Arc::new(Flags {
-        host: args.host.clone(),
-        port: args.port,
-        web_dir: args.web_dir.clone(),
-    });
-
+    let data_dir = file_cfg.data_dir();
     let cfg = Config {
-        host: args.host.clone(),
-        port: args.port,
-        data_dir: args.data_dir.clone(),
-        media_dir: args.media_dir.clone(),
-        db_path: args.data_dir.join("pv.sqlite"),
-        qdrant_url: args.qdrant_url.clone(),
-        qdrant_collection: args.qdrant_collection.clone(),
-        thumb_dir: args.data_dir.join("thumbs"),
-        export_dir: args.data_dir.join("exports"),
-        dim: args
-            .dim
-            .or_else(|| file_cfg.embedding_dimensions())
-            .unwrap_or(4096),
-        sparse_enabled: args.sparse,
-        quant: QuantMode::parse(&args.quant),
-        mock: args.mock,
-        embedding_base_url: args
-            .embedding_base_url
-            .clone()
-            .or_else(|| file_cfg.embedding_base_url())
+        host: file_cfg.host(),
+        port: file_cfg.port(),
+        data_dir: data_dir.clone(),
+        media_dir: file_cfg.media_dir(),
+        db_path: data_dir.join("pv.sqlite"),
+        qdrant_url: file_cfg.qdrant_url(),
+        qdrant_collection: file_cfg.qdrant_collection(),
+        thumb_dir: data_dir.join("thumbs"),
+        export_dir: data_dir.join("exports"),
+        dim: file_cfg.dim(),
+        sparse_enabled: file_cfg.sparse(),
+        quant: QuantMode::parse(&file_cfg.quantization()),
+        mock: file_cfg.mock(),
+        embedding_base_url: file_cfg
+            .embedding_base_url()
             .unwrap_or_else(|| "https://api.siliconflow.cn/v1".to_string()),
-        embedding_model: args
-            .embedding_model
-            .clone()
-            .or_else(|| file_cfg.embedding_model())
+        embedding_model: file_cfg
+            .embedding_model()
             .unwrap_or_else(|| "Qwen/Qwen3-VL-Embedding-8B".to_string()),
-        embedding_api_key: args
-            .embedding_api_key
-            .clone()
-            .or_else(|| file_cfg.embedding_api_key()),
+        embedding_api_key: file_cfg.embedding_api_key(),
         embedding_timeout_secs: file_cfg.embedding_timeout_secs().unwrap_or(60),
-        web_dir: args.web_dir.clone(),
-        max_media_bytes: args.max_media_bytes,
+        web_dir: file_cfg.web_dir(),
+        max_media_bytes: file_cfg.max_media_bytes(),
         comfyui_output_dir: file_cfg.comfyui_output_dir(),
         import_copy: file_cfg.import_copy(),
     };
+
+    let flags = Arc::new(Flags {
+        host: cfg.host.clone(),
+        port: cfg.port,
+        web_dir: cfg.web_dir.clone(),
+    });
 
     let state = match AppState::new(cfg).await {
         Ok(s) => s,
