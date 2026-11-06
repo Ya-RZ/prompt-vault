@@ -96,68 +96,93 @@ fn non_empty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 配置文件位置与「缺失是否算错误」。
-struct Located {
-    path: PathBuf,
-    required: bool,
-}
+/// 配置文件模板：首次启动时生成，填好再重新运行。
+pub const TEMPLATE: &str = r#"# prompt-vault 配置文件
+#
+# 首次启动自动生成。填写下面的 [embedding] 后重新运行即可。
 
-fn locate(explicit: Option<&Path>) -> Option<Located> {
+[embedding]
+# OpenAI 兼容的 embedding 服务地址（含 /v1）
+base_url = "https://api.siliconflow.cn/v1"
+# 模型名
+model = "Qwen/Qwen3-VL-Embedding-8B"
+# API Key（明文保存在本文件；不要提交进 git）
+api_key = ""
+# 向量维度（Qwen3-VL-Embedding-8B 原生 4096）
+dimensions = 4096
+# 单次 HTTP 请求超时（秒）
+timeout_secs = 60
+
+[comfyui]
+# ComfyUI 的 output 目录：导入作业不填 root 时默认扫这里。
+# 绝对路径原样使用；相对路径按可执行文件目录解析。
+# output_dir = "D:/ComfyUI/output"
+
+[import]
+# true（默认）= 复制源文件进 media，源目录保持完整；
+# false = 移动（导入后源文件消失）。
+copy = true
+"#;
+
+/// 候选位置，按优先级：显式指定 → PV_CONFIG → 可执行文件目录 → 当前目录。
+fn candidates(explicit: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
     if let Some(p) = explicit {
-        return Some(Located {
-            path: p.to_path_buf(),
-            required: true,
-        });
+        out.push(p.to_path_buf());
     }
     if let Ok(raw) = std::env::var("PV_CONFIG") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
-            return Some(Located {
-                path: PathBuf::from(trimmed),
-                required: true,
-            });
+            out.push(PathBuf::from(trimmed));
         }
     }
     if let Some(dir) = crate::paths::exe_dir() {
-        let candidate = dir.join("config.toml");
-        if candidate.is_file() {
-            return Some(Located {
-                path: candidate,
-                required: false,
-            });
-        }
+        out.push(dir.join("config.toml"));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("config.toml");
-        if candidate.is_file() {
-            return Some(Located {
-                path: candidate,
-                required: false,
-            });
-        }
+        out.push(cwd.join("config.toml"));
     }
-    None
+    out
 }
 
-/// 加载配置。`Ok(None)` = 没有配置文件（合法状态）。
+/// 已存在的配置文件路径。
+fn locate(explicit: Option<&Path>) -> Option<PathBuf> {
+    candidates(explicit).into_iter().find(|p| p.is_file())
+}
+
+/// 没有配置文件时，模板应该生成到哪里（第一个候选位置）。
+pub fn desired_path(explicit: Option<&Path>) -> PathBuf {
+    candidates(explicit)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from("config.toml"))
+}
+
+/// 加载配置。`Ok(None)` = 没有配置文件（由调用方生成模板并退出）。
 pub fn load(explicit: Option<&Path>) -> anyhow::Result<Option<FileConfig>> {
-    let Some(located) = locate(explicit) else {
+    let Some(path) = locate(explicit) else {
         return Ok(None);
     };
-    if !located.path.is_file() {
-        if located.required {
-            anyhow::bail!(
-                "配置文件不存在: {}（--config / PV_CONFIG 显式指定的文件必须存在）",
-                located.path.display()
-            );
-        }
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&located.path)
-        .with_context(|| format!("读取配置文件失败: {}", located.path.display()))?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
     let cfg: FileConfig = toml::from_str(&text)
-        .with_context(|| format!("配置文件解析失败: {}", located.path.display()))?;
+        .with_context(|| format!("配置文件解析失败: {}", path.display()))?;
     Ok(Some(cfg))
+}
+
+/// 生成配置模板。已存在则不覆盖（避免把用户填好的配置冲掉）。
+pub fn create_template(explicit: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let path = desired_path(explicit);
+    if path.exists() {
+        anyhow::bail!("配置文件已存在，不覆盖: {}", path.display());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建目录失败: {}", parent.display()))?;
+    }
+    std::fs::write(&path, TEMPLATE)
+        .with_context(|| format!("生成配置文件失败: {}", path.display()))?;
+    Ok(path)
 }
 
 #[cfg(test)]

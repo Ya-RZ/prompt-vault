@@ -85,9 +85,20 @@ async fn main() {
 
     let args = Args::parse();
 
-    // 配置文件是可选输入：没有就用车默认值，有就严格解析（错一行就拒绝启动）。
+    // 配置文件是必需的输入：找不到就生成模板并退出，让用户填完再启动。
     let file_cfg = match config_file::load(args.config.as_deref()) {
-        Ok(c) => c.unwrap_or_default(),
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            match config_file::create_template(args.config.as_deref()) {
+                Ok(path) => eprintln!(
+                    "未找到配置文件，已生成模板：{}\n\
+                     请填写 [embedding] 的 api_key（需要的话再填 comfyui.output_dir）后重新启动。",
+                    path.display()
+                ),
+                Err(e) => eprintln!("生成配置文件失败: {e:#}"),
+            }
+            std::process::exit(1);
+        }
         Err(e) => {
             eprintln!("配置文件加载失败: {e:#}");
             std::process::exit(1);
