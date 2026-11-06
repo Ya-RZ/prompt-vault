@@ -1,0 +1,84 @@
+name: windows-build
+
+# GitHub 原生 Windows 构建：不含 CUDA、不加载本地模型（2026-11 起编码走第三方 API）。
+# 前端必须先于 Rust 构建：rust-embed 在编译期把 web/dist 打进 exe。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Rust（MSVC）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: 安装 pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.8.1 --activate
+          pnpm --version
+
+      - name: 前端构建
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
+          if (-Not (Test-Path "dist/index.html")) { throw "web/dist/index.html 不存在" }
+
+      - name: 构建（release）
+        run: |
+          cargo build --release --locked 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log -Tail 120
+            exit 1
+          }
+
+      - name: 校验产物
+        run: |
+          $exe = ".\target\release\prompt-vault.exe"
+          if (-Not (Test-Path $exe)) { throw "产物不存在: $exe" }
+          Get-Item $exe | Format-List Name, Length, LastWriteTime
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prompt-vault-windows-x86_64
+          path: target/release/prompt-vault.exe
+          if-no-files-found: error
+
+      - name: 发布 Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = "target/release/prompt-vault.exe"
+          if (gh release view "${{ github.ref_name }}" 2>$null) {
+            gh release upload "${{ github.ref_name }}" $exe --clobber
+          } else {
+            gh release create "${{ github.ref_name }}" $exe --generate-notes --title "${{ github.ref_name }}"
+          }
