@@ -11,6 +11,7 @@ pub mod media;
 pub mod search;
 pub mod stats;
 pub mod tags;
+pub mod trash;
 pub mod upload;
 
 use std::sync::Arc;
@@ -147,6 +148,17 @@ pub fn build_router() -> Router {
                         .get(tags::list_tags)
                         .push(Router::with_path("cleanup").post(tags::cleanup_tags))
                         .push(Router::with_path("{id}").delete(tags::delete_tag)),
+                )
+                .push(
+                    Router::with_path("trash")
+                        .get(trash::list_trash)
+                        .delete(trash::clear_trash)
+                        .push(
+                            Router::with_path("{id}")
+                                .delete(trash::purge_trash)
+                                .push(Router::with_path("restore").post(trash::restore_trash))
+                                .push(Router::with_path("file").get(trash::trash_file)),
+                        ),
                 )
                 .push(
                     Router::with_path("maintenance")

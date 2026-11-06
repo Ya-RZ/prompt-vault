@@ -456,6 +456,12 @@ pub struct DeletedResponse {
     pub id: i64,
     pub vector_deleted: bool,
     pub file_deleted: bool,
+    /// 是否进入了回收站（2026-11 起删除默认软删除）
+    #[serde(default)]
+    pub trashed: bool,
+    /// 回收站记录 id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trash_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

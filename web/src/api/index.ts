@@ -19,6 +19,8 @@ export {
   uploadAsset,
 } from './assets';
 export { cleanupTags, deleteTag, listTags } from './tags';
+export { clearTrash, listTrash, purgeTrash, restoreTrash } from './trash';
+export type { TrashItem, TrashListResponse, TrashPrompt } from './trash';
 export {
   getSimilarPrompts,
   searchImageByAssetId,

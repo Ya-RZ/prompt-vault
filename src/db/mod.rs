@@ -3,6 +3,8 @@
 //! 元数据只在 SQLite（开发文档 §8）；向量本体在 Qdrant Server，这里只留**指纹**。
 
 pub mod assets;
+mod trash;
+pub use trash::DeletedAssetRow;
 pub mod jobs;
 
 use std::path::{Path, PathBuf};

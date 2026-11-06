@@ -6,6 +6,7 @@ import { AssetsPage } from './pages/AssetsPage';
 import { JobsPage } from './pages/JobsPage';
 import { SearchPage } from './pages/SearchPage';
 import { StatsPage } from './pages/StatsPage';
+import { TrashPage } from './pages/TrashPage';
 import { TagsPage } from './pages/TagsPage';
 
 function NotFoundPage() {
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/search" element={<SearchPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/stats" element={<StatsPage />} />
+        <Route path="/trash" element={<TrashPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

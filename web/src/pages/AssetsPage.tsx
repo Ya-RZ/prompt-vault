@@ -246,8 +246,14 @@ export function AssetsPage() {
       title: '编码',
       key: 'encoded',
       width: 90,
-      render: (_value, record) =>
-        record.vector?.encoded ? <Tag color="green">已编码</Tag> : <Tag>未编码</Tag>,
+      render: (_value, record) => {
+        const image = Boolean(record.vector?.encoded);
+        const text = (record.prompts ?? []).some((prompt) => prompt.encoded);
+        if (image && text) return <Tag color="green">词图</Tag>;
+        if (text) return <Tag color="cyan">词</Tag>;
+        if (image) return <Tag color="blue">图</Tag>;
+        return <Tag>未编码</Tag>;
+      },
     },
     {
       title: '标签',

@@ -106,3 +106,28 @@ CREATE TABLE IF NOT EXISTS import_job_error (
     at       TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_job_error_job ON import_job_error (job_id);
+
+-- 回收站：删除的资产整行迁移到这里，文件移到 data/trash/
+CREATE TABLE IF NOT EXISTS deleted_asset (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id        INTEGER NOT NULL,
+    kind            TEXT    NOT NULL,
+    rel_path        TEXT    NOT NULL,
+    title           TEXT,
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    width           INTEGER,
+    height          INTEGER,
+    duration_ms     INTEGER,
+    hash            TEXT,
+    hash_algo       TEXT    NOT NULL DEFAULT 'blake3',
+    nsfw            INTEGER NOT NULL DEFAULT 0,
+    positive_prompt TEXT,
+    negative_prompt TEXT,
+    workflow        TEXT,
+    prompts_json    TEXT,
+    trash_path      TEXT    NOT NULL,
+    added_at        TEXT    NOT NULL,
+    deleted_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deleted_hash ON deleted_asset (hash);
+CREATE INDEX IF NOT EXISTS idx_deleted_at   ON deleted_asset (deleted_at DESC);

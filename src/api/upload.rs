@@ -50,6 +50,14 @@ pub async fn upload_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
 
     let hash = blake3_file(&temp_path)?;
 
+    // 回收站里的内容不允许直接重新上传：先恢复或彻底删除。
+    if let Some(trashed) = state.db.find_trash_by_hash(&hash)? {
+        return Err(ApiError::conflict(format!(
+            "该内容已在回收站（#{}），请先在「回收站」页面恢复或彻底删除",
+            trashed.id
+        )));
+    }
+
     // 同一份内容已经入库（换个文件名再传一次）→ 直接返回既有资产，不重复占磁盘。
     if let Some(existing) = state.db.find_asset_by_hash(&hash)? {
         res.status_code(salvo::http::StatusCode::CREATED);

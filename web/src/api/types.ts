@@ -196,6 +196,8 @@ export interface Prompt {
   text: string;
   created_at: string;
   asset_id?: number;
+  /** 该提示词是否已有向量 */
+  encoded?: boolean;
 }
 
 export interface AssetVectorInfo {

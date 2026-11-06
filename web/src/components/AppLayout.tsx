@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { key: '/search', label: '搜索' },
   { key: '/jobs', label: '作业' },
   { key: '/stats', label: '统计' },
+  { key: '/trash', label: '回收站' },
 ];
 
 /** 全局页头 + 内容容器；健康状态在这里统一拉取并展示 */

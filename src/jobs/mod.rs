@@ -294,6 +294,11 @@ fn import_one(
     if params.dedupe_by != "none" && state.db.find_asset_by_hash(&hash)?.is_some() {
         return Ok(ImportOutcome::Skipped);
     }
+    // 回收站里的内容不再自动导回：需要用户先恢复或彻底删除。
+    if let Some(trashed) = state.db.find_trash_by_hash(&hash)? {
+        tracing::info!(trash_id = trashed.id, label, "内容在回收站中，跳过导入");
+        return Ok(ImportOutcome::Skipped);
+    }
 
     let raw_name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let file_name = sanitize_file_name(&raw_name);

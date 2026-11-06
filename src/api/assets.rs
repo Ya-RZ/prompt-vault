@@ -43,11 +43,20 @@ pub async fn get_asset(req: &mut Request, depot: &mut Depot, res: &mut Response)
 pub async fn delete_asset(req: &mut Request, depot: &mut Depot, res: &mut Response) -> Result<(), ApiError> {
     let state = st(depot)?.clone();
     let id = req.param::<i64>("id").ok_or_else(|| ApiError::bad_request("id 非法"))?;
-    let keep_file = req.query::<bool>("keep_file").unwrap_or(false);
     let row = state.db.asset_must_exist(id)?;
     let prompt_ids: Vec<i64> = state.db.prompts_for(id)?.iter().map(|p| p.id).collect();
 
-    // 向量两路一起删（开发文档 §13 第 7 条），删完必须 optimize（§6.3 没有后台 optimizer）
+    // 1) 文件移到回收站（保留可恢复的能力）
+    let trash_rel = trash_rel_path(&row);
+    let src = state.cfg.media_path(&row.rel_path);
+    let dst = state.cfg.data_dir.join(&trash_rel);
+    let file_moved = if src.is_file() {
+        crate::jobs::move_file(&src, &dst).is_ok()
+    } else {
+        false
+    };
+
+    // 2) 向量两路一起删（开发文档 §13 第 7 条）
     let vector_deleted = state
         .vectors
         .delete_asset_and_prompts(id, &prompt_ids)
@@ -56,16 +65,34 @@ pub async fn delete_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
     let _ = state.vectors.optimize();
     let _ = state.vectors.flush();
 
-    let deleted = state.db.delete_asset(id)?;
-    let mut file_deleted = false;
-    if !keep_file {
-        let path = state.cfg.media_path(&row.rel_path);
-        if path.is_file() && std::fs::remove_file(&path).is_ok() {
-            file_deleted = true;
-        }
-    }
-    res.render(Json(DeletedResponse { deleted, id, vector_deleted, file_deleted }));
+    // 3) 数据库整行迁移到回收站（含提示词）
+    let trash_id = state.db.move_asset_to_trash(id, &trash_rel)?;
+
+    res.render(Json(DeletedResponse {
+        deleted: true,
+        id,
+        vector_deleted,
+        file_deleted: file_moved,
+        trashed: true,
+        trash_id: Some(trash_id),
+    }));
     Ok(())
+}
+
+/// 回收站里的相对路径（相对 data 目录）：`trash/<hash 前两位>/<hash16><后缀>`。
+fn trash_rel_path(row: &crate::db::AssetRow) -> String {
+    let hash = row.hash.as_deref().unwrap_or("");
+    let ext = std::path::Path::new(&row.rel_path)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let name = if hash.len() >= 16 {
+        format!("{}{}", &hash[..16], ext)
+    } else {
+        format!("{}{}", row.id, ext)
+    };
+    let bucket = hash.get(..2).unwrap_or("misc");
+    format!("trash/{bucket}/{name}")
 }
 
 #[handler]

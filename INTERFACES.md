@@ -301,8 +301,21 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 
 ### `DELETE /api/assets/{id}`
 
-删 SQLite 行（级联 prompt/tag）+ 删 Qdrant 点（稠密与稀疏**两路**，开发文档 §13 第 7 条）
-+ 删媒体文件（`?keep_file=true` 可保留）。→ `{ "deleted": true, "id": 1, "vector_deleted": true, "file_deleted": false }`
+**软删除（2026-11 起）**：资产整行（含提示词）迁移到 `deleted_asset`，文件移到 `data/trash/`，
+Qdrant 点照常删除。→ `{ "deleted": true, "id": 1, "vector_deleted": true, "file_deleted": true, "trashed": true, "trash_id": 1 }`
+
+- 同内容的导入/上传会被回收站过滤（见 §6）
+- 需要永久删除请走回收站接口
+
+### 回收站
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/trash?page=1&page_size=50` | 列表（含 `prompts`、`deleted_at`、`file_url`） |
+| `GET /api/trash/{id}/file` | 预览回收站文件 |
+| `POST /api/trash/{id}/restore` | 文件移回 media，重建资产与提示词；**恢复后为未编码** |
+| `DELETE /api/trash/{id}` | 彻底删除（记录 + 文件），不可恢复 |
+| `DELETE /api/trash` | 清空回收站 |
 
 ### `GET /api/assets/{id}/similar?k=20&by=prompt,image`
 
@@ -440,6 +453,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 | 哈希 | blake3；文件 > 100 MB 时**只取前 100 MB** 计算 |
 | 去重 | 同一 hash 已存在 → 跳过，源文件留在原位；同名不同内容 → 加 `<hash8>-` 前缀，不覆盖 |
 | 自跳过 | 源文件已在 media 目录（或其子目录）内 → 跳过，避免自己搬自己 |
+| 回收站过滤 | 同 hash 已在 `deleted_asset` → 跳过；上传则返回 `409` 提示先去回收站恢复 |
 | 隐藏文件 | `.` 开头、`Thumbs.db`、`desktop.ini` 不导入 |
 
 ### `POST /api/jobs/encode`
