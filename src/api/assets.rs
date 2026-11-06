@@ -1,12 +1,13 @@
 //! 资产相关 handler（INTERFACES.md §4）。
 
 use salvo::prelude::*;
+use serde::Deserialize;
 
 use super::{load_asset_dtos, page_of, paginated, single_asset_dto, st};
 use crate::error::ApiError;
 use crate::search::{Engine, SearchQuery};
 use crate::types::{
-    AssetListQuery, CreatePromptRequest, DeletedResponse, UpdateMetaRequest,
+    AssetListQuery, CreatePromptRequest, DeletedResponse, EmbedInputItem, UpdateMetaRequest,
 };
 
 #[handler]
@@ -214,4 +215,101 @@ pub async fn _text_search_delegate(
             min_score: None,
         })
         .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct EncodeAssetRequest {
+    /// `image`（默认）| `positive`
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// 单张资产的手动编码：`POST /api/assets/{id}/encode`，body `{"mode":"image"|"positive"}`。
+#[handler]
+pub async fn encode_asset(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+) -> Result<(), ApiError> {
+    let state = st(depot)?.clone();
+    let id = req
+        .param::<i64>("id")
+        .ok_or_else(|| ApiError::bad_request("id 非法"))?;
+    let body: EncodeAssetRequest = req.parse_json().await.unwrap_or_default();
+    let mode = body
+        .mode
+        .as_deref()
+        .unwrap_or("image")
+        .trim()
+        .to_ascii_lowercase();
+    let asset = state.db.asset_must_exist(id)?;
+
+    match mode.as_str() {
+        "image" => {
+            let data = crate::jobs::read_image_data_url(&state, &asset.rel_path)?;
+            let outcomes = state
+                .encoder
+                .embed(vec![EmbedInputItem {
+                    text: None,
+                    image: Some(data),
+                }])
+                .await?;
+            let outcome = outcomes
+                .into_iter()
+                .next()
+                .ok_or_else(|| ApiError::encoder_error("编码器没有返回向量"))?;
+            crate::jobs::store_asset_vector(&state, id, &outcome).await?;
+            res.render(Json(serde_json::json!({
+                "asset_id": id,
+                "mode": "image",
+                "encoded": true,
+                "fingerprint": outcome.fingerprint,
+                "dim": outcome.dense.len(),
+            })));
+        }
+        "positive" => {
+            // 优先用导入时写入的 role=positive；老数据退回到 asset.positive_prompt 现场建一条。
+            let prompts = state.db.prompts_for(id)?;
+            let prompt_id = match prompts.iter().find(|p| p.role == "positive") {
+                Some(p) => p.id,
+                None => {
+                    let text = asset.positive_prompt.clone().ok_or_else(|| {
+                        ApiError::bad_request("该资产没有正面提示词（不是 ComfyUI PNG，或没解析到）")
+                    })?;
+                    state.db.insert_prompt(id, "positive", &text)?
+                }
+            };
+            let text = state
+                .db
+                .get_prompt(prompt_id)?
+                .map(|p| p.text)
+                .ok_or_else(|| ApiError::not_found("提示词不存在"))?;
+            let outcomes = state
+                .encoder
+                .embed(vec![EmbedInputItem {
+                    text: Some(text),
+                    image: None,
+                }])
+                .await?;
+            let outcome = outcomes
+                .into_iter()
+                .next()
+                .ok_or_else(|| ApiError::encoder_error("编码器没有返回向量"))?;
+            crate::jobs::store_prompt_vector(&state, prompt_id, id, &outcome).await?;
+            res.render(Json(serde_json::json!({
+                "asset_id": id,
+                "prompt_id": prompt_id,
+                "mode": "positive",
+                "encoded": true,
+                "fingerprint": outcome.fingerprint,
+                "dim": outcome.dense.len(),
+            })));
+        }
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "mode 只支持 image / positive，收到 {other}"
+            )))
+        }
+    }
+    Ok(())
 }

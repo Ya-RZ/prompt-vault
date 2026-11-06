@@ -27,6 +27,8 @@ pub struct Config {
     pub dim: usize,
     /// 是否在索引里启用稀疏（BM25）向量 —— 只在建 shard 时生效
     pub sparse_enabled: bool,
+    /// 编码作业是否编码图片（资产）；`false` = 只编码提示词
+    pub encode_images: bool,
     pub quant: QuantMode,
     /// `--mock`：不调用第三方服务，用确定性伪向量跑通链路（仅开发/冒烟）
     pub mock: bool,

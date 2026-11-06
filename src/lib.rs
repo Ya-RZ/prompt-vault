@@ -4,6 +4,7 @@
 //! → `search`（多路召回 + RRF）→ `jobs`（批量作业）→ `api`（Salvo 路由）。
 
 pub mod api;
+pub mod comfy;
 pub mod config_file;
 pub mod db;
 pub mod encode;

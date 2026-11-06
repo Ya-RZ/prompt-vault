@@ -76,6 +76,7 @@ async fn main() {
         export_dir: data_dir.join("exports"),
         dim: file_cfg.dim(),
         sparse_enabled: file_cfg.sparse(),
+        encode_images: file_cfg.encode_images(),
         quant: QuantMode::parse(&file_cfg.quantization()),
         mock: file_cfg.mock(),
         embedding_base_url: file_cfg

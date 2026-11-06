@@ -315,6 +315,27 @@ fn import_one(
         .db
         .insert_asset(&kind, &rel, None, bytes, width, height, None, Some(&hash))?;
     let _ = state.db.set_asset_dimensions(id, width, height, None, Some(&hash));
+
+    // ComfyUI 元数据：仅 PNG，解析失败不阻断导入（普通图片本来就没有这些块）。
+    if target
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("png"))
+        .unwrap_or(false)
+    {
+        if let Some(meta) = crate::comfy::read_png_meta(&target) {
+            let _ = state.db.set_asset_comfy(
+                id,
+                meta.positive.as_deref(),
+                meta.negative.as_deref(),
+                meta.workflow.as_deref(),
+            );
+            // 正面提示词单独进 prompt 表，供检索与单图编码；负面只展示、不编码。
+            if let Some(pos) = meta.positive.as_deref().filter(|s| !s.trim().is_empty()) {
+                let _ = state.db.insert_prompt(id, "positive", pos);
+            }
+        }
+    }
+
     Ok(ImportOutcome::Added)
 }
 
@@ -354,13 +375,19 @@ pub fn blake3_file(path: &std::path::Path) -> ApiResult<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// 目标分桶目录名：`media/<hash 前两位>/{image|video|other}/<文件名>`。
-/// 归档相对路径（相对 media 根，统一用 `/`）：`<hash 前两位>/<文件名>`。
+/// 归档相对路径：`<hash 前两位>/<hash 前 16 位><后缀>`。
 ///
-/// 不再按 image/video/other 分子目录 —— 类型仍然判定并写进 `asset.kind`，只是不参与路径。
+/// 文件名不再保留原名：同内容必然同文件名，去重路径可以直接由 hash 推出来。
 pub fn target_rel_path(hash: &str, file_name: &str) -> String {
     let prefix = hash.get(..2).unwrap_or("00");
-    format!("{prefix}/{file_name}")
+    let stem = hash.get(..16).unwrap_or(hash);
+    let ext = std::path::Path::new(file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    format!("{prefix}/{stem}{ext}")
 }
 
 /// 按扩展名 + 能否读出尺寸判定 kind；图片读不出尺寸的归到 `other`。
@@ -471,21 +498,17 @@ pub fn pick_target_rel(
     hash: &str,
     file_name: &str,
 ) -> ApiResult<TargetChoice> {
-    let candidates = [
-        target_rel_path(hash, file_name),
-        target_rel_path(hash, &format!("{}-{file_name}", hash.get(..8).unwrap_or(hash))),
-    ];
-    for rel in candidates {
-        let abs = state.cfg.media_path(&rel);
-        if !abs.exists() {
-            return Ok(TargetChoice::New(rel));
-        }
-        if abs.is_file() && blake3_file(&abs).map(|h| h == hash).unwrap_or(false) {
-            return Ok(TargetChoice::Existing(rel));
-        }
+    // 文件名现在完全由 hash 决定：目标存在 = 同内容（或 16 位前缀碰撞）。
+    let rel = target_rel_path(hash, file_name);
+    let abs = state.cfg.media_path(&rel);
+    if !abs.exists() {
+        return Ok(TargetChoice::New(rel));
+    }
+    if abs.is_file() && blake3_file(&abs).map(|h| h == hash).unwrap_or(false) {
+        return Ok(TargetChoice::Existing(rel));
     }
     Err(ApiError::conflict(format!(
-        "目标位置已被不同内容的文件占用（{hash} / {file_name}），未覆盖"
+        "目标位置已被不同内容的文件占用（{hash} 前 16 位碰撞？），未覆盖"
     )))
 }
 
@@ -582,7 +605,11 @@ async fn run_encode(
     let skipped = 0i64;
 
     // ---- 资产（图片/视频封面）----
-    let assets = if let Some(ids) = params.asset_ids.as_ref() {
+    let assets = if !state.cfg.encode_images {
+        // 配置关闭时只编码提示词；以图搜图/单图编码不受影响。
+        tracing::info!("encode_images=false：跳过图片编码，本次只处理提示词");
+        Vec::<(i64, String)>::new()
+    } else if let Some(ids) = params.asset_ids.as_ref() {
         ids.iter().filter_map(|id| state.db.get_asset(*id).ok().flatten().map(|a| (a.id, a.rel_path))).collect()
     } else {
         state.db.pending_assets(params.limit, index_fp.as_deref()).unwrap_or_default()
@@ -746,11 +773,15 @@ async fn run_encode(
 
     let _ = state.vectors.flush();
     let _ = state.db.update_job_progress(&job_id, done, failed, skipped, None);
-    let summary = format!("编码完成：成功 {done}，失败 {failed}");
+    let summary = if state.cfg.encode_images {
+        format!("编码完成：成功 {done}，失败 {failed}")
+    } else {
+        format!("编码完成：成功 {done}，失败 {failed}（encode_images=false，已跳过图片）")
+    };
     let _ = state.db.set_job_status(&job_id, "succeeded", Some(&summary));
 }
 
-fn read_image_data_url(state: &Arc<AppState>, rel_path: &str) -> ApiResult<String> {
+pub(crate) fn read_image_data_url(state: &Arc<AppState>, rel_path: &str) -> ApiResult<String> {
     let path = state.cfg.media_path(rel_path);
     let bytes = std::fs::read(&path)
         .map_err(|e| ApiError::bad_request(format!("读取媒体失败 {}: {e}", path.display())))?;
@@ -764,7 +795,7 @@ fn read_image_data_url(state: &Arc<AppState>, rel_path: &str) -> ApiResult<Strin
     Ok(crate::encode::image_data_url(&bytes, crate::encode::mime_for_path(rel_path)))
 }
 
-async fn store_asset_vector(
+pub(crate) async fn store_asset_vector(
     state: &Arc<AppState>,
     asset_id: i64,
     outcome: &crate::encode::EncodeOutcome,
@@ -802,7 +833,7 @@ async fn store_asset_vector(
     )
 }
 
-async fn store_prompt_vector(
+pub(crate) async fn store_prompt_vector(
     state: &Arc<AppState>,
     prompt_id: i64,
     asset_id: i64,

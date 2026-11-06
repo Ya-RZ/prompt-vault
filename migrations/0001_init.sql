@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS asset (
     -- 哈希算法标识：以后换算法时靠它区分，不靠猜
     hash_algo   TEXT    NOT NULL DEFAULT 'blake3' CHECK (hash_algo IN ('blake3')),
     nsfw        INTEGER NOT NULL DEFAULT 0,
+    -- ComfyUI 元数据（PNG tEXt）：导入时解析，普通图片为 NULL
+    positive_prompt TEXT,
+    negative_prompt TEXT,
+    workflow        TEXT,
     added_at    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_asset_added_at ON asset (added_at DESC);

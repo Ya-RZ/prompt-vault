@@ -54,6 +54,16 @@ impl Db {
             );
         }
         conn.execute_batch(SCHEMA_SQL)?;
+        // 旧库补列：SQLite 没有 ADD COLUMN IF NOT EXISTS，只能逐个探测。
+        for (column, ty) in [
+            ("positive_prompt", "TEXT"),
+            ("negative_prompt", "TEXT"),
+            ("workflow", "TEXT"),
+        ] {
+            if !has_column(&conn, "asset", column)? {
+                conn.execute(&format!("ALTER TABLE asset ADD COLUMN {column} {ty}"), [])?;
+            }
+        }
         let db = Self { conn: Arc::new(Mutex::new(conn)), path };
         db.set_meta(META_SCHEMA_VERSION, SCHEMA_VERSION)?;
         Ok(db)
@@ -193,6 +203,12 @@ pub struct AssetRow {
     /// 指纹算法标识；恒为 `blake3`
     pub hash_algo: String,
     pub nsfw: bool,
+    /// ComfyUI 正面提示词（来自 PNG tEXt.prompt；普通图片为 None）
+    pub positive_prompt: Option<String>,
+    /// ComfyUI 负面提示词
+    pub negative_prompt: Option<String>,
+    /// ComfyUI 工作流（UI 格式 JSON，原样保存）
+    pub workflow: Option<String>,
     pub added_at: String,
 }
 
@@ -210,6 +226,9 @@ impl AssetRow {
             hash: row.get("hash")?,
             hash_algo: row.get("hash_algo")?,
             nsfw: row.get::<_, i64>("nsfw")? != 0,
+            positive_prompt: row.get("positive_prompt")?,
+            negative_prompt: row.get("negative_prompt")?,
+            workflow: row.get("workflow")?,
             added_at: row.get("added_at")?,
         })
     }

@@ -72,6 +72,8 @@ pub struct IndexSection {
     pub sparse: Option<bool>,
     /// `scalar` | `turbo4` | `off`
     pub quantization: Option<String>,
+    /// 编码作业是否编码图片（资产）；`false` = 只编码提示词
+    pub encode_images: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -148,6 +150,11 @@ impl FileConfig {
 
     pub fn quantization(&self) -> String {
         non_empty(self.index.quantization.as_deref()).unwrap_or_else(|| "scalar".to_string())
+    }
+
+    /// 编码作业是否编码图片（默认 true，保持旧行为）。
+    pub fn encode_images(&self) -> bool {
+        self.index.encode_images.unwrap_or(true)
     }
 
     /// 向量维度：`[embedding] dimensions`，再退到 4096。
@@ -232,6 +239,8 @@ collection = "pv"
 sparse = true
 # scalar | turbo4 | off
 quantization = "scalar"
+# 编码作业是否编码图片；false = 只编码提示词（以图搜图仍可用）
+encode_images = true
 
 [embedding]
 base_url = "https://api.siliconflow.cn/v1"

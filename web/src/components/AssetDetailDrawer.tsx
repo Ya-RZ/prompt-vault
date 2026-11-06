@@ -2,6 +2,8 @@ import { DownloadOutlined } from '@ant-design/icons';
 import {
   App as AntdApp,
   Button,
+  Card,
+  Collapse,
   Descriptions,
   Divider,
   Drawer,
@@ -24,10 +26,12 @@ import {
   createAssetPrompt,
   deleteAsset,
   describeError,
+  encodeAsset,
   getAsset,
   getSimilarAssets,
   updateAssetMeta,
   type Asset,
+  type EncodeAssetMode,
   type SearchHit,
 } from '../api';
 import { useAsync } from '../hooks/useAsync';
@@ -37,6 +41,15 @@ import { ErrorState } from './ErrorState';
 import { tagColor } from '../utils/tagColor';
 
 const { Text, Paragraph } = Typography;
+
+/** 工作流 JSON 格式化；解析失败就原样展示。 */
+function prettyJson(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
 
 /** 下载所需的最小字段：完整 Asset 与搜索结果的 SearchAssetRef 都有。 */
 interface Downloadable {
@@ -145,6 +158,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
   const { message } = AntdApp.useApp();
   const [saving, setSaving] = useState(false);
   const [revealed, setRevealed] = useState(false);
+  const [encoding, setEncoding] = useState<EncodeAssetMode | null>(null);
 
   // 元数据编辑的本地草稿
   const [tagDraft, setTagDraft] = useState<string[]>([]);
@@ -227,6 +241,21 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
       handleError(cause, '保存元数据失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleEncode = async (mode: EncodeAssetMode) => {
+    if (assetId === null) return;
+    setEncoding(mode);
+    try {
+      const result = await encodeAsset(assetId, mode);
+      message.success(`编码完成（${mode}，dim=${result.dim}）`);
+      reload();
+      onMutated();
+    } catch (cause) {
+      handleError(cause, mode === 'image' ? '编码图片失败' : '编码正面提示词失败');
+    } finally {
+      setEncoding(null);
     }
   };
 
@@ -373,6 +402,73 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
           },
         ]}
       />
+
+      <Card
+        size="small"
+        title="ComfyUI 元数据"
+        extra={
+          <Space size={8}>
+            <Button size="small" loading={encoding === 'image'} onClick={() => handleEncode('image')}>
+              编码图片
+            </Button>
+            <Button
+              size="small"
+              loading={encoding === 'positive'}
+              disabled={!asset.positive_prompt}
+              onClick={() => handleEncode('positive')}
+            >
+              编码正面提示词
+            </Button>
+          </Space>
+        }
+      >
+        {asset.positive_prompt || asset.negative_prompt || asset.workflow ? (
+          <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+            {asset.positive_prompt ? (
+              <div>
+                <Text strong>正面提示词</Text>
+                <Paragraph style={{ margin: '4px 0 0' }} copyable={{ text: asset.positive_prompt }}>
+                  {asset.positive_prompt}
+                </Paragraph>
+              </div>
+            ) : null}
+            {asset.negative_prompt ? (
+              <div>
+                <Text strong>负面提示词</Text>
+                <Paragraph style={{ margin: '4px 0 0' }} copyable={{ text: asset.negative_prompt }}>
+                  {asset.negative_prompt}
+                </Paragraph>
+              </div>
+            ) : null}
+            {asset.workflow ? (
+              <Collapse
+                size="small"
+                items={[
+                  {
+                    key: 'workflow',
+                    label: '工作流 JSON',
+                    children: (
+                      <pre
+                        style={{
+                          maxHeight: 320,
+                          overflow: 'auto',
+                          margin: 0,
+                          fontSize: 12,
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {prettyJson(asset.workflow)}
+                      </pre>
+                    ),
+                  },
+                ]}
+              />
+            ) : null}
+          </Space>
+        ) : (
+          <Text type="secondary">该资产没有 ComfyUI 元数据（非 PNG，或没解析到）</Text>
+        )}
+      </Card>
 
       <Space size={16} wrap>
         <Space size={8}>

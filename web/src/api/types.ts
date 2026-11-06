@@ -222,12 +222,31 @@ export interface Asset {
   hash_algo: HashAlgo;
   nsfw: boolean;
   added_at: string;
+  /** ComfyUI 正面提示词（PNG tEXt 解析；普通图片为 null） */
+  positive_prompt: string | null;
+  /** ComfyUI 负面提示词 */
+  negative_prompt: string | null;
+  /** ComfyUI 工作流 JSON 原文 */
+  workflow: string | null;
   tags: string[];
   prompts: Prompt[];
   vector: AssetVectorInfo;
   /** 契约 §7.3：前缀由后端给，前端不拼接 */
   media_url: string;
   thumb_url: string;
+}
+
+/** 单图手动编码的模式 */
+export type EncodeAssetMode = 'image' | 'positive';
+
+/** POST /api/assets/{id}/encode 响应 */
+export interface EncodeAssetResult {
+  asset_id: number;
+  prompt_id?: number;
+  mode: EncodeAssetMode;
+  encoded: boolean;
+  fingerprint: string;
+  dim: number;
 }
 
 /** GET /api/assets 查询参数（tag 为单选：首页过滤器只允许一个标签） */

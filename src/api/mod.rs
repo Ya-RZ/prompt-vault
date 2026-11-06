@@ -108,6 +108,7 @@ pub fn build_router() -> Router {
                                 .delete(assets::delete_asset)
                                 .push(Router::with_path("prompts").post(assets::add_prompt))
                                 .push(Router::with_path("meta").post(assets::update_meta))
+                                .push(Router::with_path("encode").post(assets::encode_asset))
                                 .push(Router::with_path("similar").get(assets::similar_assets)),
                         ),
                 )

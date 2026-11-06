@@ -53,6 +53,9 @@ pub fn asset_to_dto(
         hash_algo: asset.hash_algo.clone(),
         nsfw: asset.nsfw,
         added_at: asset.added_at.clone(),
+        positive_prompt: asset.positive_prompt.clone(),
+        negative_prompt: asset.negative_prompt.clone(),
+        workflow: asset.workflow.clone(),
         tags,
         prompts: prompts
             .into_iter()

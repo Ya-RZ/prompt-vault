@@ -5,6 +5,8 @@ import type {
   AssetListResponse,
   CreatePromptRequest,
   DeleteAssetResponse,
+  EncodeAssetMode,
+  EncodeAssetResult,
   Prompt,
   SearchResponse,
   UpdateAssetMetaRequest,
@@ -79,6 +81,19 @@ export function getSimilarAssets(
 ): Promise<SearchResponse> {
   return apiRequest<SearchResponse>(`/assets/${id}/similar`, {
     query: { k, mode },
+    signal,
+  });
+}
+
+/** POST /api/assets/{id}/encode —— 单图手动编码，可选图片或正面提示词 */
+export function encodeAsset(
+  id: number,
+  mode: EncodeAssetMode,
+  signal?: AbortSignal,
+): Promise<EncodeAssetResult> {
+  return apiRequest<EncodeAssetResult>(`/assets/${id}/encode`, {
+    method: 'POST',
+    body: { mode },
     signal,
   });
 }

@@ -8,8 +8,7 @@ use super::{now_rfc3339, AssetRow, Db, PromptRow, VectorStateRow};
 use crate::error::{ApiError, ApiResult};
 use crate::types::{AssetListQuery, CountItem};
 
-const ASSET_COLS: &str =
-    "id, kind, rel_path, title, bytes, width, height, duration_ms, hash, hash_algo, nsfw, added_at";
+const ASSET_COLS: &str = "id, kind, rel_path, title, bytes, width, height, duration_ms, hash, hash_algo, nsfw, positive_prompt, negative_prompt, workflow, added_at";
 
 impl Db {
     // ------------------------------------------------------------ 资产
@@ -52,6 +51,23 @@ impl Db {
                 Some(r) => Ok(Some(r?)),
                 None => Ok(None),
             }
+        })
+    }
+
+    /// 写入 ComfyUI 元数据（导入时调用）。普通图片传 None 保持 NULL。
+    pub fn set_asset_comfy(
+        &self,
+        id: i64,
+        positive: Option<&str>,
+        negative: Option<&str>,
+        workflow: Option<&str>,
+    ) -> ApiResult<()> {
+        self.with_conn(|c| {
+            c.execute(
+                "UPDATE asset SET positive_prompt = ?1, negative_prompt = ?2, workflow = ?3 WHERE id = ?4",
+                params![positive, negative, workflow, id],
+            )?;
+            Ok(())
         })
     }
 

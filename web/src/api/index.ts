@@ -11,6 +11,7 @@ export { fetchHealth } from './health';
 export {
   createAssetPrompt,
   deleteAsset,
+  encodeAsset,
   getAsset,
   getSimilarAssets,
   listAssets,

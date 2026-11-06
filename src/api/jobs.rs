@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use salvo::prelude::*;
-use uuid::Uuid;
 
 use super::{st, ApiResult};
 use crate::db::JobRow;
@@ -126,7 +125,7 @@ pub async fn create_import(req: &mut Request, depot: &mut Depot, res: &mut Respo
     let mut stored_params = params.clone();
     stored_params.root = stored_root.clone();
     let params_json = serde_json::to_string(&stored_params).ok();
-    let id = Uuid::new_v4().to_string();
+    let id = new_job_id();
     state.db.create_job(
         &id,
         "import",
@@ -154,7 +153,7 @@ pub async fn create_encode(req: &mut Request, depot: &mut Depot, res: &mut Respo
     };
     state.check_golden_gate()?;
 
-    let id = Uuid::new_v4().to_string();
+    let id = new_job_id();
     let params_json = serde_json::to_string(&params).ok();
     state.db.create_job(
         &id,
@@ -299,4 +298,14 @@ pub async fn delete_job(req: &mut Request, depot: &mut Depot, res: &mut Response
     let deleted = state.db.delete_job(&id)?;
     res.render(Json(serde_json::json!({ "deleted": deleted })));
     Ok(())
+}
+
+/// 作业 id：本地时间戳（毫秒），例如 `20261106-214227-123`。
+fn new_job_id() -> String {
+    let now = chrono::Local::now();
+    format!(
+        "{}-{:03}",
+        now.format("%Y%m%d-%H%M%S"),
+        now.timestamp_subsec_millis()
+    )
 }

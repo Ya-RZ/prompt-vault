@@ -74,6 +74,12 @@ pub struct AssetDto {
     pub hash_algo: String,
     pub nsfw: bool,
     pub added_at: String,
+    /// ComfyUI 正面提示词（PNG tEXt 解析；普通图片为 null）
+    pub positive_prompt: Option<String>,
+    /// ComfyUI 负面提示词
+    pub negative_prompt: Option<String>,
+    /// ComfyUI 工作流（UI 格式 JSON 原文）
+    pub workflow: Option<String>,
     pub tags: Vec<String>,
     pub prompts: Vec<PromptDto>,
     pub vector: VectorStateDto,

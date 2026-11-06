@@ -105,7 +105,8 @@
 asset(id INTEGER PK, kind TEXT['image'|'video'|'other'], rel_path TEXT UNIQUE, bytes INTEGER,
       width INTEGER, height INTEGER, duration_ms INTEGER,
       hash TEXT, hash_algo TEXT NOT NULL DEFAULT 'blake3',
-      nsfw INTEGER DEFAULT 0, added_at TEXT)
+      nsfw INTEGER DEFAULT 0,
+      positive_prompt TEXT, negative_prompt TEXT, workflow TEXT, added_at TEXT)
 prompt(id INTEGER PK, asset_id INTEGER → asset ON DELETE CASCADE, role TEXT,
        text TEXT, created_at TEXT)
 prompt_vector(prompt_id INTEGER PK → prompt ON DELETE CASCADE, fingerprint TEXT NOT NULL,
@@ -227,7 +228,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 
 ### `POST /api/assets/upload`
 
-`multipart/form-data`，字段名 `file`。落盘 → 按 `<media>/<hash 前两位>/` 归档 → 建资产（未编码）→ 返回 `201` + `AssetDto`。
+`multipart/form-data`，字段名 `file`。落盘 → 按 `<media>/<hash 前两位>/<hash 前 16 位><后缀>` 归档 → 建资产（未编码）→ 返回 `201` + `AssetDto`。
 
 - 大小上限由 `[media] max_bytes` 控制（默认 256 MB），超限 → `413 PAYLOAD_TOO_LARGE`
 - 同一 blake3 hash 已存在 → 直接返回已有资产（不重复落盘）
@@ -245,7 +246,10 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
     "id": 1, "kind": "image", "rel_path": "wallhaven/2026/cat.jpg", "bytes": 123456,
     "width": 1024, "height": 1024, "duration_ms": null,
     "hash": "…", "hash_algo": "blake3",
-    "nsfw": false, "added_at": "2026-10-16T12:00:00Z",
+    "nsfw": false, "added_at": "2026-11-06T12:00:00Z",
+    "positive_prompt": "一只在窗台上的橘猫，写实照片",
+    "negative_prompt": "模糊，低质量",
+    "workflow": "{\"nodes\": […]}",
     "tags": ["cat", "sunset"],
     "prompts": [ { "id": 1, "role": "caption", "text": "…", "created_at": "…" } ],
     "vector": { "encoded": true, "fingerprint": "…", "dim": 2048, "resized": "1632x1088", "vision_tokens": 1734, "encoded_at": "…" },
@@ -261,6 +265,19 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 ### `GET /api/assets/{id}`
 
 单个资产对象，结构同上（多带 `prompts` 全部角色）。
+
+### `POST /api/assets/{id}/encode`
+
+单图手动编码，不经过作业：
+
+```json
+{ "mode": "image" }
+```
+
+- `image`（默认）：读媒体文件 → 编码 → 写 `asset_vector`；响应 `{ asset_id, mode, encoded, fingerprint, dim }`
+- `positive`：取该资产的 `prompt(role='positive')`（没有则用 `positive_prompt` 现场建一条）→ 编码 → 写 `prompt_vector`；
+  响应额外带 `prompt_id`
+- 非法 `mode` → `400 BAD_REQUEST`；资产没有正面提示词 → `400`；编码不可用 → `ENCODER_*`
 
 ### `POST /api/assets/{id}/prompts`
 
@@ -407,7 +424,8 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 | --- | --- |
 | `root` | 可省略；省略时用 `config.toml` 的 `[comfyui] output_dir`（没配置才回落 media）。可传绝对或相对路径（相对路径以**可执行文件所在目录**为基准）；目录不存在直接 `400`。**落库时换算成相对路径**，跨盘无法换算则存空并在 `warnings` 提示；响应里的 `root` 是现场拼回的绝对路径 |
 | `extensions` | 小写、不带点；**空数组 = 不过滤**，任意类型都可导入（落 `other` 桶） |
-| 归档 | 复制到 `<media>/<hash 前两位>/<文件名>`（`config.toml` 里 `import.copy = false` 时改为移动；类型只写进 `asset.kind`） |
+| 归档 | 复制到 `<media>/<hash 前两位>/<hash 前 16 位><后缀>`（`import.copy = false` 时改为移动；类型只写进 `asset.kind`） |
+| ComfyUI 元数据 | 仅 PNG：解析 `tEXt` 的 `prompt`/`workflow`，写入 `positive_prompt`/`negative_prompt`/`workflow`；positive 另写一条 `prompt(role='positive')` |
 | 哈希 | blake3；文件 > 100 MB 时**只取前 100 MB** 计算 |
 | 去重 | 同一 hash 已存在 → 跳过，源文件留在原位；同名不同内容 → 加 `<hash8>-` 前缀，不覆盖 |
 | 自跳过 | 源文件已在 media 目录（或其子目录）内 → 跳过，避免自己搬自己 |
