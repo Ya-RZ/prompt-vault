@@ -27,8 +27,19 @@ pub struct HttpEncoderConfig {
 }
 
 impl HttpEncoderConfig {
+    /// 实际请求地址。
+    ///
+    /// 容忍两种常见写法：用户把完整端点填进 `base_url`（`.../v1/embeddings`），
+    /// 或写成单数 `.../v1/embedding`。两种都归一成 `.../v1/embeddings`。
     pub fn endpoint(&self) -> String {
-        format!("{}/embeddings", self.base_url.trim_end_matches('/'))
+        let base = self.base_url.trim_end_matches('/');
+        if base.ends_with("/embeddings") {
+            return base.to_string();
+        }
+        if base.ends_with("/embedding") {
+            return format!("{base}s");
+        }
+        format!("{base}/embeddings")
     }
 
     /// 向量空间指纹。云端实现可能静默升级，所以这里把 base_url + model + dim 都钉进去，
@@ -170,4 +181,39 @@ fn to_request_item(item: &EmbedInputItem) -> ApiResult<serde_json::Value> {    i
 
 fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(base: &str) -> HttpEncoderConfig {
+        HttpEncoderConfig {
+            base_url: base.to_string(),
+            model: "m".into(),
+            api_key: "k".into(),
+            dim: 4096,
+            timeout_secs: 60,
+        }
+    }
+
+    #[test]
+    fn endpoint_normalizes_base_url() {
+        assert_eq!(
+            cfg("https://api.siliconflow.cn/v1").endpoint(),
+            "https://api.siliconflow.cn/v1/embeddings"
+        );
+        assert_eq!(
+            cfg("https://api.siliconflow.cn/v1/").endpoint(),
+            "https://api.siliconflow.cn/v1/embeddings"
+        );
+        assert_eq!(
+            cfg("https://api.siliconflow.cn/v1/embeddings").endpoint(),
+            "https://api.siliconflow.cn/v1/embeddings"
+        );
+        assert_eq!(
+            cfg("https://api.siliconflow.cn/v1/embedding").endpoint(),
+            "https://api.siliconflow.cn/v1/embeddings"
+        );
+    }
 }

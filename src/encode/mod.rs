@@ -304,7 +304,7 @@ fn diagnose(raw: &str) -> String {
     let hint = if lower.contains("401") || lower.contains("invalid api") || lower.contains("unauthorized") {
         "API Key 无效或过期：检查 [embedding] api_key"
     } else if lower.contains("404") || lower.contains("not found") {
-        "服务地址或模型名不对：base_url 必须含 /v1（如 https://api.siliconflow.cn/v1），model 用文档里的完整名"
+        "服务地址或模型名不对：base_url 用 https://api.siliconflow.cn/v1（端点必须是 /v1/embeddings，复数），model 用文档里的完整名"
     } else if lower.contains("dimensions") || lower.contains("parameter is invalid") {
         "请求参数被拒：优先检查 dimensions 是否在模型支持列表（Qwen3 系列支持 64~4096；bge 等模型不支持 dimensions，需换成 Qwen3 或去掉该参数）"
     } else if lower.contains("429") || lower.contains("rate limit") {
