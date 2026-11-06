@@ -2,13 +2,13 @@
 #
 # 为什么要自定义镜像：一条流水线里必须同时具备三样东西，官方镜像没有任何一个能全给。
 #   1. Node 22 + pnpm     —— 前端构建（Vite 8 要求 Node ≥ 20.19 / 22.12）
-#   2. Rust + gcc/g++/cmake —— 本项目有 C 与 C++ 依赖：rusqlite(bundled) 编 SQLite，qdrant-edge 带 cpp/
+#   2. Rust + gcc/g++/cmake —— rusqlite(bundled) 编 SQLite；部分 crate 的构建脚本仍会调 g++/cmake
 #   3. mingw-w64          —— Windows 交叉编译（x86_64-pc-windows-gnu）
 #
 # 另外镜像里预置了 windows-gnu target，省掉每次流水线都 rustup target add。
 #
-# ⚠️ 镜像里**不含**任何模型权重，也不含 Python —— 编码侧车是独立进程，
-#    按开发文档 §10 铁律 8，模型绝不进任何二进制或镜像。
+# ⚠️ 镜像里**不含**任何模型权重，也不含 API Key：编码走第三方 embedding API，
+#    运行时只需要一份 config.toml（开发文档 §10 铁律 6）。
 
 FROM node:22-bookworm-slim
 
@@ -16,7 +16,7 @@ ARG RUST_VERSION=1.99.0
 ARG PNPM_VERSION=12.8.1
 ARG DEBIAN_FRONTEND=noninteractive
 
-# build-essential: rusqlite bundled 要 cc；g++/cmake: qdrant-edge 的 cpp 部分；
+# build-essential: rusqlite bundled 要 cc；g++/cmake: 部分 crate 的构建脚本仍会用；
 # gcc-mingw-w64/g++-mingw-w64: Windows 交叉编译；pkg-config/xz-utils: 常见构建依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config cmake \

@@ -1,5 +1,7 @@
-# 模型权重：4.0 GB，绝不入库（开发文档 §3 / §10 铁律 8）
-# candle 从 <仓库根>/models/qwen3-vl-embedding-2b 加载（侧车已移除）
+# 本地配置（含 embedding API Key）：绝不入库
+/config.toml
+
+# 历史模型权重：2026-11 已删除本地编码，规则保留，防止误提交旧权重
 /models/
 /kit/models/
 *.safetensors
@@ -20,10 +22,6 @@ pytorch_model*.bin
 # 前端
 /web/node_modules/
 /web/dist/
-
-# 杂项
-*.log
-.env
 
 # CI 本地模拟产物
 /dist-artifacts/

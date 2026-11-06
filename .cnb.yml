@@ -57,7 +57,7 @@ main:
   #   2. settings.target_url 改成你的 GitHub 仓库地址
   #
   # 关于「屏蔽无用文件」：git-sync 同步的是 **git 对象**，不是工作区，
-  # 所以 .gitignore 里的东西（模型 4.2GB / data / target / node_modules / web/dist / download）
+  # 所以 .gitignore 里的东西（config.toml / data / target / node_modules / web/dist / download）
   # 天然不会被带过去 —— 前提是它们从来没被提交过。当前仓库满足这个前提。
   web_trigger_sync_github:
     - name: 同步到 GitHub（rebase）
@@ -278,7 +278,7 @@ $:
             description: |
               prompt-vault $CNB_BRANCH
 
-              产物（均不含模型权重，按开发文档 §10 铁律 8）：
+              产物（不含模型权重与密钥）：
               - prompt-vault-linux-x86_64
               - prompt-vault-windows-x86_64.exe
 
