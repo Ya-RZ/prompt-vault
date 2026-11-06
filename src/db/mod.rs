@@ -127,6 +127,47 @@ impl Db {
         })
     }
 
+    /// 强制清空：DROP 所有业务表 → 按 schema 重建 → 清掉与数据强相关的 meta。
+    ///
+    /// 保留 `meta` 表本身与 `schema_version`；`index_fingerprint` / `last_golden` /
+    /// `sparse_enabled` 必须清掉，否则换模型后会被旧指纹拦在写入闸门外。
+    pub fn purge_all(&self) -> ApiResult<()> {
+        const TABLES: [&str; 8] = [
+            "import_job_error",
+            "import_job",
+            "asset_tag",
+            "prompt_vector",
+            "asset_vector",
+            "prompt",
+            "tag",
+            "asset",
+        ];
+        self.with_conn(|c| {
+            c.execute_batch("PRAGMA foreign_keys = OFF;")?;
+            for table in TABLES {
+                c.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+            }
+            c.execute_batch(SCHEMA_SQL)?;
+            c.execute_batch("PRAGMA foreign_keys = ON;")?;
+            Ok(())
+        })?;
+        for key in [META_INDEX_FINGERPRINT, META_LAST_GOLDEN, META_SPARSE_ENABLED] {
+            let _ = self.delete_meta(key);
+        }
+        Ok(())
+    }
+
+    /// 运行中/排队中的作业数（强制清空前要拦住）。
+    pub fn active_job_count(&self) -> ApiResult<i64> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM import_job WHERE status IN ('running', 'pending')",
+                [],
+                |r| r.get(0),
+            )
+        })
+    }
+
     pub fn get_meta(&self, key: &str) -> ApiResult<Option<String>> {
         self.with_conn(|c| {
             c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))

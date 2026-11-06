@@ -142,3 +142,67 @@ pub fn space_check(state: &AppState) -> serde_json::Value {
 fn _msg(m: impl Into<String>) -> MessageResponse {
     MessageResponse { message: m.into(), data: None }
 }
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct PurgeRequest {
+    /// 必须显式传 `"DELETE"`，避免误触
+    pub confirm: Option<String>,
+}
+
+/// 强制清空：删除所有资产/提示词/标签/作业记录，重建 Qdrant 集合，清空 media 与 thumbs。
+#[handler]
+pub async fn purge_all(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let body: PurgeRequest = req.parse_json().await.unwrap_or_default();
+    if body.confirm.as_deref() != Some("DELETE") {
+        return Err(ApiError::bad_request(
+            "强制清空需要在 body 里传 {\"confirm\": \"DELETE\"}",
+        ));
+    }
+    let active = state.db.active_job_count()?;
+    if active > 0 {
+        return Err(ApiError::conflict(format!(
+            "还有 {active} 个运行中/排队中的作业，先取消或等待完成再清空"
+        )));
+    }
+
+    let (assets, _images, _videos, _nsfw, _bytes) = state.db.count_assets()?;
+    state.db.purge_all()?;
+    state.vectors.recreate().await?;
+    let (files, bytes) = clear_dir(&state.cfg.media_dir);
+    let (thumbs, _) = clear_dir(&state.cfg.thumb_dir);
+
+    tracing::warn!(assets, files, thumbs, "已执行强制清空");
+    res.render(Json(serde_json::json!({
+        "assets_deleted": assets,
+        "files_deleted": files,
+        "thumbs_deleted": thumbs,
+        "bytes_freed": bytes,
+        "collection_recreated": true,
+    })));
+    Ok(())
+}
+
+/// 递归删除目录下的文件（保留目录结构），返回 (文件数, 总字节)。
+fn clear_dir(root: &std::path::Path) -> (usize, u64) {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    let mut dirs = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() {
+            files += 1;
+            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(entry.path());
+        } else if entry.file_type().is_dir() {
+            dirs.push(entry.path().to_path_buf());
+        }
+    }
+    for dir in dirs.into_iter().rev() {
+        let _ = std::fs::remove_dir(dir);
+    }
+    (files, bytes)
+}

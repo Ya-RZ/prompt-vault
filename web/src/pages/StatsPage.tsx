@@ -1,9 +1,12 @@
 import { ReloadOutlined } from '@ant-design/icons';
 import {
+  App as AntdApp,
   Button,
   Card,
   Col,
   Empty,
+  Input,
+  Modal,
   Progress,
   Row,
   Space,
@@ -12,11 +15,13 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 
 import {
+  describeError,
   fetchSize,
   fetchStats,
+  purgeAll,
   type SizeResponse,
   type StatsResponse,
 } from '../api';
@@ -73,6 +78,30 @@ const KIND_LABEL: Record<string, string> = {
 
 /** /stats —— 总量、编码进度、体积、按类型 */
 export function StatsPage() {
+  const { message } = AntdApp.useApp();
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgeConfirm, setPurgeConfirm] = useState('');
+  const [purging, setPurging] = useState(false);
+
+  const handlePurge = async () => {
+    setPurging(true);
+    try {
+      const result = await purgeAll();
+      message.success(
+        `已清空：资产 ${result.assets_deleted}，文件 ${result.files_deleted}，释放 ${formatBytes(
+          result.bytes_freed,
+        )}`,
+      );
+      setPurgeOpen(false);
+      setPurgeConfirm('');
+      reloadAll();
+    } catch (cause) {
+      message.error(describeError(cause).title);
+    } finally {
+      setPurging(false);
+    }
+  };
+
   const statsLoader = useCallback((signal: AbortSignal) => fetchStats(signal), []);
   const sizeLoader = useCallback((signal: AbortSignal) => fetchSize(signal), []);
 
@@ -226,12 +255,49 @@ export function StatsPage() {
             )}
           </Row>
 
+          <Card size="small" variant="outlined" title="危险操作" styles={{ body: { padding: 12 } }}>
+            <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+              <Text type="secondary">
+                清空数据库记录、Qdrant 集合与 media 文件，不可恢复。有运行中的作业时会被拒绝。
+              </Text>
+              <Button danger onClick={() => setPurgeOpen(true)}>
+                清空全部数据
+              </Button>
+            </Space>
+          </Card>
         </>
       ) : (
         <Card variant="outlined">
           <Empty description="没有统计数据" />
         </Card>
       )}
+
+      <Modal
+        open={purgeOpen}
+        title="确认清空全部数据？"
+        okText="清空"
+        cancelText="取消"
+        okButtonProps={{ danger: true, disabled: purgeConfirm !== 'DELETE', loading: purging }}
+        onOk={handlePurge}
+        onCancel={() => {
+          setPurgeOpen(false);
+          setPurgeConfirm('');
+        }}
+      >
+        <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+          <Text>
+            将删除所有资产、提示词、标签、作业记录、Qdrant 向量以及 media/thumbs 文件，且不可恢复。
+          </Text>
+          <Text>
+            输入 <Text code>DELETE</Text> 确认：
+          </Text>
+          <Input
+            value={purgeConfirm}
+            onChange={(event) => setPurgeConfirm(event.target.value)}
+            placeholder="DELETE"
+          />
+        </Space>
+      </Modal>
     </Space>
   );
 }

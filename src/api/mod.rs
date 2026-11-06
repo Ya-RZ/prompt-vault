@@ -156,6 +156,7 @@ pub fn build_router() -> Router {
                         .push(Router::with_path("vector/import").post(maintenance::vector_import))
                         .push(Router::with_path("golden/verify").post(maintenance::golden_verify))
                         .push(Router::with_path("comfy/reparse").post(maintenance::comfy_reparse))
+                        .push(Router::with_path("purge").post(maintenance::purge_all))
                         .push(Router::with_path("encoder/refresh").post(maintenance::encoder_refresh)),
                 ),
         )

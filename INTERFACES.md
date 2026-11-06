@@ -406,6 +406,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 | `POST /api/maintenance/golden/verify` | 跑一次金标校验并落库，返回 `{golden, blocks_jobs}` |
 | `POST /api/maintenance/encoder/refresh` | 返回当前编码器状态（第三方服务地址、模型、维度、最近一次调用） |
 | `POST /api/maintenance/comfy/reparse` | 回填已有 PNG 的 ComfyUI 元数据（幂等；返回 scanned/updated） |
+| `POST /api/maintenance/purge` | **强制清空**：body 必须带 `{"confirm":"DELETE"}`；DROP 业务表并重建、重建 Qdrant 集合、清空 media/thumbs；有 running/pending 作业时 `409` |
 
 ---
 

@@ -245,6 +245,25 @@ impl VectorStore {
         Ok(())
     }
 
+    /// 强制重建集合：删掉现有集合（含所有点）后按当前配置重新创建。
+    pub async fn recreate(&self) -> ApiResult<()> {
+        let exists = self
+            .client
+            .collection_exists(&self.collection)
+            .await
+            .map_err(|e| ApiError::internal(format!("查询集合是否存在失败: {e}")))?;
+        if exists {
+            self.client
+                .delete_collection(&self.collection)
+                .await
+                .map_err(|e| ApiError::internal(format!("删除集合 {} 失败: {e}", self.collection)))?;
+            tracing::warn!(collection = %self.collection, "已删除 Qdrant 集合（强制清空）");
+        }
+        self.ensure_collection().await?;
+        self.ensure_indexes().await?;
+        Ok(())
+    }
+
     pub fn dim(&self) -> usize {
         self.dim
     }

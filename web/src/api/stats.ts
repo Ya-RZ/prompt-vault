@@ -24,3 +24,20 @@ export function fetchFacets(
 export function fetchSize(signal?: AbortSignal): Promise<SizeResponse> {
   return apiRequest<SizeResponse>('/stats/size', { signal });
 }
+
+export interface PurgeResult {
+  assets_deleted: number;
+  files_deleted: number;
+  thumbs_deleted: number;
+  bytes_freed: number;
+  collection_recreated: boolean;
+}
+
+/** POST /api/maintenance/purge —— 强制清空（必须传 confirm=DELETE） */
+export function purgeAll(signal?: AbortSignal): Promise<PurgeResult> {
+  return apiRequest<PurgeResult>('/maintenance/purge', {
+    method: 'POST',
+    body: { confirm: 'DELETE' },
+    signal,
+  });
+}
