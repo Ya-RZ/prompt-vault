@@ -71,14 +71,25 @@ jobs:
           path: target/release/prompt-vault.exe
           if-no-files-found: error
 
-      - name: 发布 Release（仅 tag）
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: 发布 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $exe = "target/release/prompt-vault.exe"
-          if (gh release view "${{ github.ref_name }}" 2>$null) {
-            gh release upload "${{ github.ref_name }}" $exe --clobber
+          if ("${{ github.ref }}" -like "refs/tags/*") {
+            # 版本发布：tag 名就是 release 名
+            $tag = "${{ github.ref_name }}"
+            $notes = "Release $tag"
           } else {
-            gh release create "${{ github.ref_name }}" $exe --generate-notes --title "${{ github.ref_name }}"
+            # 分支构建：统一覆盖一个 latest 预发布，方便直接下载最新 exe
+            $tag = "latest"
+            $notes = "自动构建 ${{ github.sha }}"
           }
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $exe --clobber
+          } elseif ($tag -eq "latest") {
+            gh release create $tag $exe --title "latest build" --notes $notes --prerelease
+          } else {
+            gh release create $tag $exe --title $tag --notes $notes
+          }
+          gh release view $tag --json url,tagName,assets
