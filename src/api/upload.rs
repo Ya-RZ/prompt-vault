@@ -74,6 +74,8 @@ pub async fn upload_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
         .db
         .insert_asset(&kind, &rel, None, bytes, width, height, None, Some(&hash))?;
     let _ = state.db.set_asset_dimensions(id, width, height, None, Some(&hash));
+    // 上传同样解析 ComfyUI 元数据（与文件夹导入共用一套逻辑）。
+    let _ = crate::jobs::apply_comfy_meta(state.as_ref(), id, &state.cfg.media_path(&rel));
 
     let row = state.db.asset_must_exist(id)?;
     res.status_code(salvo::http::StatusCode::CREATED);

@@ -233,6 +233,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 - 大小上限由 `[media] max_bytes` 控制（默认 256 MB），超限 → `413 PAYLOAD_TOO_LARGE`
 - 同一 blake3 hash 已存在 → 直接返回已有资产（不重复落盘）
 - kind 判定：扩展名 + 能否读出图片/视频尺寸；判不出的归 `other`
+- **PNG 会解析 ComfyUI 元数据**（`tEXt`）：写入 `positive_prompt` / `negative_prompt` / `workflow`，正面提示词另建 `prompt(role='positive')`
 
 ### `GET /api/assets`
 
@@ -404,6 +405,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 | `POST /api/maintenance/vector/import` | 从 JSONL 重建（搬家/灾备）。body `{"path":"…"}` |
 | `POST /api/maintenance/golden/verify` | 跑一次金标校验并落库，返回 `{golden, blocks_jobs}` |
 | `POST /api/maintenance/encoder/refresh` | 返回当前编码器状态（第三方服务地址、模型、维度、最近一次调用） |
+| `POST /api/maintenance/comfy/reparse` | 回填已有 PNG 的 ComfyUI 元数据（幂等；返回 scanned/updated） |
 
 ---
 

@@ -3,7 +3,6 @@ import {
   App as AntdApp,
   Button,
   Card,
-  Collapse,
   Descriptions,
   Divider,
   Drawer,
@@ -403,73 +402,6 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
         ]}
       />
 
-      <Card
-        size="small"
-        title="ComfyUI 元数据"
-        extra={
-          <Space size={8}>
-            <Button size="small" loading={encoding === 'image'} onClick={() => handleEncode('image')}>
-              编码图片
-            </Button>
-            <Button
-              size="small"
-              loading={encoding === 'positive'}
-              disabled={!asset.positive_prompt}
-              onClick={() => handleEncode('positive')}
-            >
-              编码正面提示词
-            </Button>
-          </Space>
-        }
-      >
-        {asset.positive_prompt || asset.negative_prompt || asset.workflow ? (
-          <Space orientation="vertical" size={10} style={{ width: '100%' }}>
-            {asset.positive_prompt ? (
-              <div>
-                <Text strong>正面提示词</Text>
-                <Paragraph style={{ margin: '4px 0 0' }} copyable={{ text: asset.positive_prompt }}>
-                  {asset.positive_prompt}
-                </Paragraph>
-              </div>
-            ) : null}
-            {asset.negative_prompt ? (
-              <div>
-                <Text strong>负面提示词</Text>
-                <Paragraph style={{ margin: '4px 0 0' }} copyable={{ text: asset.negative_prompt }}>
-                  {asset.negative_prompt}
-                </Paragraph>
-              </div>
-            ) : null}
-            {asset.workflow ? (
-              <Collapse
-                size="small"
-                items={[
-                  {
-                    key: 'workflow',
-                    label: '工作流 JSON',
-                    children: (
-                      <pre
-                        style={{
-                          maxHeight: 320,
-                          overflow: 'auto',
-                          margin: 0,
-                          fontSize: 12,
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
-                        {prettyJson(asset.workflow)}
-                      </pre>
-                    ),
-                  },
-                ]}
-              />
-            ) : null}
-          </Space>
-        ) : (
-          <Text type="secondary">该资产没有 ComfyUI 元数据（非 PNG，或没解析到）</Text>
-        )}
-      </Card>
-
       <Space size={16} wrap>
         <Space size={8}>
           <Text strong>NSFW 标记</Text>
@@ -537,12 +469,58 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
     </Space>
   ) : null;
 
+  const otherPrompts = asset
+    ? asset.prompts.filter((p) => p.role !== 'positive' && p.role !== 'negative')
+    : [];
+
   const promptsTab = asset ? (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {asset.prompts.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有提示词" />
+      <Space size={8} wrap>
+        <Button size="small" loading={encoding === 'image'} onClick={() => handleEncode('image')}>
+          编码图片
+        </Button>
+        <Button
+          size="small"
+          loading={encoding === 'positive'}
+          disabled={!asset.positive_prompt}
+          onClick={() => handleEncode('positive')}
+        >
+          编码正面提示词
+        </Button>
+        {!asset.positive_prompt ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            没有解析到正面提示词（非 ComfyUI PNG，或旧资产未回填）
+          </Text>
+        ) : null}
+      </Space>
+
+      {asset.positive_prompt || asset.negative_prompt ? (
+        <Card size="small" title="ComfyUI 提示词">
+          <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+            {asset.positive_prompt ? (
+              <div>
+                <Text strong>正面提示词</Text>
+                <Paragraph style={{ margin: '4px 0 0' }} copyable={{ text: asset.positive_prompt }}>
+                  {asset.positive_prompt}
+                </Paragraph>
+              </div>
+            ) : null}
+            {asset.negative_prompt ? (
+              <div>
+                <Text strong>负面提示词</Text>
+                <Paragraph style={{ margin: '4px 0 0' }} copyable={{ text: asset.negative_prompt }}>
+                  {asset.negative_prompt}
+                </Paragraph>
+              </div>
+            ) : null}
+          </Space>
+        </Card>
+      ) : null}
+
+      {otherPrompts.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有其他提示词" />
       ) : (
-        asset.prompts.map((prompt) => (
+        otherPrompts.map((prompt) => (
           <div key={prompt.id} style={{ borderBottom: '1px solid #f0f0f0', paddingBottom: 8 }}>
             <Space size={8} wrap>
               <Tag color="blue">{prompt.role}</Tag>
@@ -588,6 +566,42 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
     </Space>
   ) : null;
 
+  const workflowTab = asset ? (
+    asset.workflow ? (
+      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+        <Space>
+          <Text type="secondary">来自 PNG 的 ComfyUI workflow（UI 格式）</Text>
+          <Button
+            size="small"
+            onClick={() => {
+              void navigator.clipboard?.writeText(asset.workflow ?? '');
+              message.success('工作流已复制');
+            }}
+          >
+            复制 JSON
+          </Button>
+        </Space>
+        <pre
+          style={{
+            maxHeight: '60vh',
+            overflow: 'auto',
+            margin: 0,
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            background: '#fafafa',
+            border: '1px solid #f0f0f0',
+            borderRadius: 8,
+            padding: 12,
+          }}
+        >
+          {prettyJson(asset.workflow)}
+        </pre>
+      </Space>
+    ) : (
+      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有解析到工作流" />
+    )
+  ) : null;
+
   const similarTab = (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Space>
@@ -621,6 +635,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
           items={[
             { key: 'overview', label: '概览', children: overview },
             { key: 'prompts', label: `提示词（${asset.prompts.length}）`, children: promptsTab },
+            { key: 'workflow', label: '工作流', children: workflowTab },
             { key: 'similar', label: '相似资产', children: similarTab },
           ]}
         />

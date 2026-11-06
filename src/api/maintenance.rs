@@ -100,6 +100,27 @@ pub async fn golden_verify(depot: &mut Depot, res: &mut Response) -> ApiResult<(
     Ok(())
 }
 
+/// 回填 ComfyUI 元数据：扫描已有 PNG 资产，重新解析正/负提示词与工作流（幂等）。
+#[handler]
+pub async fn comfy_reparse(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let rows = state.db.png_assets()?;
+    let total = rows.len();
+    let mut updated = 0usize;
+    for (id, rel) in rows {
+        let path = state.cfg.media_path(&rel);
+        if crate::jobs::apply_comfy_meta(&state, id, &path) {
+            updated += 1;
+        }
+    }
+    res.render(Json(serde_json::json!({
+        "scanned": total,
+        "updated": updated,
+        "note": "只处理 PNG；没有 ComfyUI 文本块的图片不会变化"
+    })));
+    Ok(())
+}
+
 /// 编码器状态刷新：返回第三方服务地址、模型、维度与最近一次调用状态。
 #[handler]
 pub async fn encoder_refresh(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {

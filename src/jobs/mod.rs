@@ -317,24 +317,7 @@ fn import_one(
     let _ = state.db.set_asset_dimensions(id, width, height, None, Some(&hash));
 
     // ComfyUI 元数据：仅 PNG，解析失败不阻断导入（普通图片本来就没有这些块）。
-    if target
-        .extension()
-        .map(|e| e.eq_ignore_ascii_case("png"))
-        .unwrap_or(false)
-    {
-        if let Some(meta) = crate::comfy::read_png_meta(&target) {
-            let _ = state.db.set_asset_comfy(
-                id,
-                meta.positive.as_deref(),
-                meta.negative.as_deref(),
-                meta.workflow.as_deref(),
-            );
-            // 正面提示词单独进 prompt 表，供检索与单图编码；负面只展示、不编码。
-            if let Some(pos) = meta.positive.as_deref().filter(|s| !s.trim().is_empty()) {
-                let _ = state.db.insert_prompt(id, "positive", pos);
-            }
-        }
-    }
+    let _ = apply_comfy_meta(state, id, &target);
 
     Ok(ImportOutcome::Added)
 }
@@ -510,6 +493,43 @@ pub fn pick_target_rel(
     Err(ApiError::conflict(format!(
         "目标位置已被不同内容的文件占用（{hash} 前 16 位碰撞？），未覆盖"
     )))
+}
+
+/// 解析 PNG 的 ComfyUI 元数据并写库（导入与上传共用）。
+///
+/// 幂等：已经有 `role=positive` 的提示词时不重复插入，方便对历史资产反复回填。
+/// 返回 `true` 表示至少解析到一项（正/负提示词或工作流）。
+pub(crate) fn apply_comfy_meta(state: &AppState, asset_id: i64, path: &std::path::Path) -> bool {
+    if !path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("png"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let Some(meta) = crate::comfy::read_png_meta(path) else {
+        return false;
+    };
+    if meta.positive.is_none() && meta.negative.is_none() && meta.workflow.is_none() {
+        return false;
+    }
+    let _ = state.db.set_asset_comfy(
+        asset_id,
+        meta.positive.as_deref(),
+        meta.negative.as_deref(),
+        meta.workflow.as_deref(),
+    );
+    if let Some(pos) = meta.positive.as_deref().filter(|s| !s.trim().is_empty()) {
+        let has_positive = state
+            .db
+            .prompts_for(asset_id)
+            .map(|ps| ps.iter().any(|p| p.role == "positive"))
+            .unwrap_or(false);
+        if !has_positive {
+            let _ = state.db.insert_prompt(asset_id, "positive", pos);
+        }
+    }
+    true
 }
 
 /// 判断某个路径是否落在资产库（media）或其子目录内。

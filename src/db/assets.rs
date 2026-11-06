@@ -54,6 +54,19 @@ impl Db {
         })
     }
 
+    /// 所有 PNG 资产（供 ComfyUI 元数据回填扫描）。
+    pub fn png_assets(&self) -> ApiResult<Vec<(i64, String)>> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, rel_path FROM asset
+                 WHERE kind = 'image' AND lower(rel_path) LIKE '%.png'
+                 ORDER BY id ASC",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect()
+        })
+    }
+
     /// 写入 ComfyUI 元数据（导入时调用）。普通图片传 None 保持 NULL。
     pub fn set_asset_comfy(
         &self,
