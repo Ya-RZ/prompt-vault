@@ -28,6 +28,7 @@ pub async fn stats(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
             points: state.vectors.points_estimate().await,
             dense_size: state.cfg.dim as i64,
             sparse_enabled: state.vectors.sparse_enabled(),
+            sparse_active: state.vectors.sparse_enabled() && state.encoder.sparse_capable(),
             disk_bytes: state.vectors.disk_bytes(),
             quantization: state.vectors.quantization().as_str().to_string(),
         },

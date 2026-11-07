@@ -63,6 +63,8 @@ export interface EncoderInfo {
   /** 权重是否已真正加载（懒加载：首次编码后才为 true） */
   loaded: boolean;
   fingerprint: string;
+  /** 是否能产出稀疏向量（mock 能，第三方 HTTP 不能） */
+  sparse?: boolean;
   last_error?: string | null;
   last_checked_at?: string | null;
 }
@@ -87,6 +89,7 @@ export interface IndexInfo {
   prompts: number;
   dense_size: number;
   sparse_enabled: boolean;
+  sparse_active?: boolean;
   quantization: string;
   dir: string;
 }
@@ -131,6 +134,7 @@ export interface StatsResponse {
     points: number;
     dense_size: number;
     sparse_enabled: boolean;
+    sparse_active?: boolean;
     disk_bytes: number;
     quantization: string;
   };

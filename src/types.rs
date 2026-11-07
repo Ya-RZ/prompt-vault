@@ -140,6 +140,9 @@ pub struct EncoderInfo {
     /// 权重是否已真正加载进内存（懒加载：首次编码后才为 true）
     pub loaded: bool,
     pub fingerprint: Option<String>,
+    /// 编码器是否能产出 BM25 稀疏向量（mock 能；第三方 HTTP 不能）
+    #[serde(default)]
+    pub sparse: bool,
     pub last_error: Option<String>,
     pub last_checked_at: String,
 }
@@ -166,6 +169,9 @@ pub struct IndexInfo {
     pub prompts: i64,
     pub dense_size: i64,
     pub sparse_enabled: bool,
+    /// 索引启用了 sparse 且当前编码器能写入（真正的"稀疏可用"）
+    #[serde(default)]
+    pub sparse_active: bool,
     pub quantization: String,
     pub dir: String,
 }
@@ -216,6 +222,9 @@ pub struct VectorsCounts {
     pub points: Option<u64>,
     pub dense_size: i64,
     pub sparse_enabled: bool,
+    /// 索引启用 sparse 且编码器能写入（真正的稀疏可用）
+    #[serde(default)]
+    pub sparse_active: bool,
     pub disk_bytes: u64,
     pub quantization: String,
 }

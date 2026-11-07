@@ -186,6 +186,7 @@ pub async fn health(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
     let state = state_of(depot)?;
     // 编码在进程内完成，health 只读当前状态（不再有 HTTP 侧车可探）。
     let encoder = crate::encode::health_snapshot(&state.encoder);
+    let sparse_active = state.vectors.sparse_enabled() && state.encoder.sparse_capable();
     let golden = state.golden_snapshot();
     let index_fp = state.index_fingerprint()?;
     let points = state.vectors.points_estimate().await;
@@ -210,6 +211,7 @@ pub async fn health(depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
             prompts: prompts_total,
             dense_size: state.cfg.dim as i64,
             sparse_enabled: state.vectors.sparse_enabled(),
+            sparse_active,
             quantization: state.vectors.quantization().as_str().to_string(),
             dir: format!("{}#{}", state.vectors.url(), state.vectors.collection()),
         },

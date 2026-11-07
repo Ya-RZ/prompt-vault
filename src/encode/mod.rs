@@ -76,6 +76,11 @@ impl EncoderClient {
         self.mock
     }
 
+    /// 编码器是否能产出 BM25 稀疏向量：只有 mock 能，第三方 HTTP 只给稠密。
+    pub fn sparse_capable(&self) -> bool {
+        self.mock
+    }
+
     /// 编码能力是否可用：mock 恒可用，否则要有第三方客户端。
     pub fn is_available(&self) -> bool {
         self.mock || self.http.is_some()
@@ -293,6 +298,8 @@ pub fn health_snapshot(client: &EncoderClient) -> crate::types::EncoderInfo {
         max_length: None,
         loaded: !mock && client.is_available(),
         fingerprint: Some(client.fingerprint_hint()),
+        // 只有 mock 会产 sparse；第三方 embedding 只给稠密向量。
+        sparse: client.sparse_capable(),
         last_error: client.last_error(),
         last_checked_at: client.last_checked_at().unwrap_or_else(crate::db::now_rfc3339),
     }

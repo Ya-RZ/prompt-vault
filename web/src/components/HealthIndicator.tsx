@@ -142,10 +142,29 @@ export function HealthIndicator({ health, error, loading, onRefresh }: HealthInd
       </Tooltip>
 
       <Tooltip
-        title={`稀疏路（sparse）：${health.index.sparse_enabled ? '可用' : '不可用，hybrid 会退化为 dense'}`}
+        title={
+          health.index.sparse_active
+            ? '稀疏路（sparse）可用'
+            : health.index.sparse_enabled
+              ? '索引里建了 sparse 向量名，但当前编码器（第三方 API）不产出稀疏向量，实际没有数据；hybrid 会退化为 dense + lexical'
+              : '建集合时未启用 sparse'
+        }
       >
-        <Tag color={health.index.sparse_enabled ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>
-          {health.index.sparse_enabled ? '稀疏可用' : '稀疏不可用'}
+        <Tag
+          color={
+            health.index.sparse_active
+              ? 'green'
+              : health.index.sparse_enabled
+                ? 'orange'
+                : 'default'
+          }
+          style={{ marginInlineEnd: 0 }}
+        >
+          {health.index.sparse_active
+            ? '稀疏可用'
+            : health.index.sparse_enabled
+              ? '稀疏空（无写入）'
+              : '稀疏关闭'}
         </Tag>
       </Tooltip>
 
