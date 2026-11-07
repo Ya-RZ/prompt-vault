@@ -2,6 +2,8 @@
 //!
 //! 导出通路仍然保留：即使换成 Qdrant Server，JSONL 仍是跨实现搬家的最稳格式。
 
+use std::sync::Arc;
+
 use salvo::prelude::*;
 
 use super::{st, ApiResult};
@@ -149,42 +151,109 @@ pub struct PurgeRequest {
     pub confirm: Option<String>,
 }
 
-/// 强制清空：删除所有资产/提示词/标签/作业记录，重建 Qdrant 集合，清空 media 与 thumbs。
-#[handler]
-pub async fn purge_all(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
-    let state = st(depot)?.clone();
-    let body: PurgeRequest = req.parse_json().await.unwrap_or_default();
+fn require_confirm(body: &PurgeRequest) -> ApiResult<()> {
     if body.confirm.as_deref() != Some("DELETE") {
         return Err(ApiError::bad_request(
-            "强制清空需要在 body 里传 {\"confirm\": \"DELETE\"}",
+            "清空操作需要在 body 里传 {\"confirm\": \"DELETE\"}",
         ));
     }
+    Ok(())
+}
+
+fn ensure_no_active_jobs(state: &Arc<AppState>) -> ApiResult<()> {
     let active = state.db.active_job_count()?;
     if active > 0 {
         return Err(ApiError::conflict(format!(
             "还有 {active} 个运行中/排队中的作业，先取消或等待完成再清空"
         )));
     }
+    Ok(())
+}
+
+/// POST /api/maintenance/purge/database —— 只清数据库（DROP 业务表并重建）
+#[handler]
+pub async fn purge_database(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let body: PurgeRequest = req.parse_json().await.unwrap_or_default();
+    require_confirm(&body)?;
+    ensure_no_active_jobs(&state)?;
+
+    let (assets, _images, _videos, _nsfw, _bytes) = state.db.count_assets()?;
+    state.db.purge_all()?;
+    tracing::warn!(assets, "已清空数据库（向量与文件保留）");
+    res.render(Json(serde_json::json!({
+        "scope": "database",
+        "assets_deleted": assets,
+    })));
+    Ok(())
+}
+
+/// POST /api/maintenance/purge/vectors —— 只重建 Qdrant 集合
+#[handler]
+pub async fn purge_vectors(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let body: PurgeRequest = req.parse_json().await.unwrap_or_default();
+    require_confirm(&body)?;
+    ensure_no_active_jobs(&state)?;
+
+    state.vectors.recreate().await?;
+    tracing::warn!(collection = %state.vectors.collection(), "已重建向量集合（数据库与文件保留）");
+    res.render(Json(serde_json::json!({
+        "scope": "vectors",
+        "collection": state.vectors.collection(),
+        "recreated": true,
+    })));
+    Ok(())
+}
+
+/// POST /api/maintenance/purge/media —— 只删媒体文件并清理空目录
+#[handler]
+pub async fn purge_media(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let body: PurgeRequest = req.parse_json().await.unwrap_or_default();
+    require_confirm(&body)?;
+    ensure_no_active_jobs(&state)?;
+
+    let (files, bytes, dirs) = clear_dir(&state.cfg.media_dir);
+    let (thumbs, _thumb_bytes, thumb_dirs) = clear_dir(&state.cfg.thumb_dir);
+    tracing::warn!(files, thumbs, dirs, "已删除媒体与缩略图文件");
+    res.render(Json(serde_json::json!({
+        "scope": "media",
+        "files_deleted": files + thumbs,
+        "dirs_removed": dirs + thumb_dirs,
+        "bytes_freed": bytes,
+    })));
+    Ok(())
+}
+
+/// POST /api/maintenance/purge —— 一键全清：数据库 + 向量 + 文件
+#[handler]
+pub async fn purge_all(req: &mut Request, depot: &mut Depot, res: &mut Response) -> ApiResult<()> {
+    let state = st(depot)?.clone();
+    let body: PurgeRequest = req.parse_json().await.unwrap_or_default();
+    require_confirm(&body)?;
+    ensure_no_active_jobs(&state)?;
 
     let (assets, _images, _videos, _nsfw, _bytes) = state.db.count_assets()?;
     state.db.purge_all()?;
     state.vectors.recreate().await?;
-    let (files, bytes) = clear_dir(&state.cfg.media_dir);
-    let (thumbs, _) = clear_dir(&state.cfg.thumb_dir);
+    let (files, bytes, dirs) = clear_dir(&state.cfg.media_dir);
+    let (thumbs, _thumb_bytes, thumb_dirs) = clear_dir(&state.cfg.thumb_dir);
 
-    tracing::warn!(assets, files, thumbs, "已执行强制清空");
+    tracing::warn!(assets, files, thumbs, dirs, "已执行强制清空");
     res.render(Json(serde_json::json!({
+        "scope": "all",
         "assets_deleted": assets,
-        "files_deleted": files,
-        "thumbs_deleted": thumbs,
+        "files_deleted": files + thumbs,
+        "dirs_removed": dirs + thumb_dirs,
         "bytes_freed": bytes,
         "collection_recreated": true,
     })));
     Ok(())
 }
 
-/// 递归删除目录下的文件（保留目录结构），返回 (文件数, 总字节)。
-fn clear_dir(root: &std::path::Path) -> (usize, u64) {
+/// 递归删除目录下的文件并清理空目录（保留根目录），返回 (文件数, 总字节, 删除的目录数)。
+fn clear_dir(root: &std::path::Path) -> (usize, u64, usize) {
     let mut files = 0usize;
     let mut bytes = 0u64;
     let mut dirs = Vec::new();
@@ -201,8 +270,11 @@ fn clear_dir(root: &std::path::Path) -> (usize, u64) {
             dirs.push(entry.path().to_path_buf());
         }
     }
+    let mut removed = 0usize;
     for dir in dirs.into_iter().rev() {
-        let _ = std::fs::remove_dir(dir);
+        if std::fs::remove_dir(&dir).is_ok() {
+            removed += 1;
+        }
     }
-    (files, bytes)
+    (files, bytes, removed)
 }

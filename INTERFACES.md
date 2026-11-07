@@ -437,7 +437,11 @@ Qdrant 点照常删除。→ `{ "deleted": true, "id": 1, "vector_deleted": true
 | `POST /api/maintenance/golden/verify` | 跑一次金标校验并落库，返回 `{golden, blocks_jobs}` |
 | `POST /api/maintenance/encoder/refresh` | 返回当前编码器状态（第三方服务地址、模型、维度、最近一次调用） |
 | `POST /api/maintenance/comfy/reparse` | 回填已有 PNG 的 ComfyUI 元数据（幂等；返回 scanned/updated） |
-| `POST /api/maintenance/purge` | **强制清空**：body 必须带 `{"confirm":"DELETE"}`；DROP 业务表并重建、重建 Qdrant 集合、清空 media/thumbs；有 running/pending 作业时 `409` |
+| `POST /api/maintenance/purge/database` | **只清数据库**：DROP 业务表并重建、清索引指纹；向量与文件保留 |
+| `POST /api/maintenance/purge/vectors` | **只清向量库**：删集合并按当前配置重建；数据库与文件保留 |
+| `POST /api/maintenance/purge/media` | **只清媒体**：删除 media/ 与 thumbs/ 下文件并清理空目录；数据库与向量保留 |
+| `POST /api/maintenance/purge` | **全部清空**：以上三者组合 |
+| （以上四个都） | body 必须带 `{"confirm":"DELETE"}`；有 running/pending 作业时 `409` |
 
 ---
 

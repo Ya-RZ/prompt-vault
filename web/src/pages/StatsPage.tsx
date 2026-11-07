@@ -7,6 +7,7 @@ import {
   Empty,
   Input,
   Modal,
+  Popconfirm,
   Progress,
   Row,
   Space,
@@ -22,6 +23,8 @@ import {
   fetchSize,
   fetchStats,
   purgeAll,
+  purgeScope,
+  type PurgeScope,
   type SizeResponse,
   type StatsResponse,
 } from '../api';
@@ -82,6 +85,26 @@ export function StatsPage() {
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeConfirm, setPurgeConfirm] = useState('');
   const [purging, setPurging] = useState(false);
+  const [purgingScope, setPurgingScope] = useState<PurgeScope | null>(null);
+
+  const handlePurgeScope = async (scope: PurgeScope) => {
+    setPurgingScope(scope);
+    try {
+      await purgeScope(scope);
+      message.success(
+        scope === 'database'
+          ? '数据库已清理（向量与文件保留）'
+          : scope === 'vectors'
+            ? '向量集合已重建（数据库与文件保留）'
+            : '媒体与缩略图文件已删除，空目录已清理',
+      );
+      reloadAll();
+    } catch (cause) {
+      message.error(describeError(cause).title);
+    } finally {
+      setPurgingScope(null);
+    }
+  };
 
   const handlePurge = async () => {
     setPurging(true);
@@ -258,11 +281,49 @@ export function StatsPage() {
           <Card size="small" variant="outlined" title="危险操作" styles={{ body: { padding: 12 } }}>
             <Space orientation="vertical" size={8} style={{ width: '100%' }}>
               <Text type="secondary">
-                清空数据库记录、Qdrant 集合与 media 文件，不可恢复。有运行中的作业时会被拒绝。
+                三个清理项互相独立：只清数据库 / 只重建向量库 / 只删媒体文件。有运行中的作业时会被拒绝。
               </Text>
-              <Button danger onClick={() => setPurgeOpen(true)}>
-                清空全部数据
-              </Button>
+              <Space wrap>
+                <Popconfirm
+                  title="清理数据库？"
+                  description="只清 SQLite 记录（资产/提示词/标签/作业），向量与文件保留。"
+                  okText="清理"
+                  okButtonProps={{ danger: true }}
+                  cancelText="取消"
+                  onConfirm={() => handlePurgeScope('database')}
+                >
+                  <Button danger loading={purgingScope === 'database'}>
+                    清理数据库
+                  </Button>
+                </Popconfirm>
+                <Popconfirm
+                  title="清理向量库？"
+                  description="只删 Qdrant 集合并按当前配置重建；数据库与文件保留。"
+                  okText="重建"
+                  okButtonProps={{ danger: true }}
+                  cancelText="取消"
+                  onConfirm={() => handlePurgeScope('vectors')}
+                >
+                  <Button danger loading={purgingScope === 'vectors'}>
+                    清理向量库
+                  </Button>
+                </Popconfirm>
+                <Popconfirm
+                  title="清理媒体文件？"
+                  description="只删除 media/ 与 thumbs/ 下的文件并清理空目录；数据库与向量保留。"
+                  okText="删除"
+                  okButtonProps={{ danger: true }}
+                  cancelText="取消"
+                  onConfirm={() => handlePurgeScope('media')}
+                >
+                  <Button danger loading={purgingScope === 'media'}>
+                    清理媒体文件
+                  </Button>
+                </Popconfirm>
+                <Button danger type="primary" onClick={() => setPurgeOpen(true)}>
+                  全部清空
+                </Button>
+              </Space>
             </Space>
           </Card>
         </>

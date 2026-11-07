@@ -33,7 +33,17 @@ export interface PurgeResult {
   collection_recreated: boolean;
 }
 
-/** POST /api/maintenance/purge —— 强制清空（必须传 confirm=DELETE） */
+export type PurgeScope = 'database' | 'vectors' | 'media';
+
+/** POST /api/maintenance/purge/{scope} —— 分开清空数据库 / 向量库 / 媒体文件 */
+export function purgeScope(scope: PurgeScope): Promise<Record<string, unknown>> {
+  return apiRequest(`/maintenance/purge/${scope}`, {
+    method: 'POST',
+    body: { confirm: 'DELETE' },
+  });
+}
+
+/** POST /api/maintenance/purge —— 全部清空（必须传 confirm=DELETE） */
 export function purgeAll(signal?: AbortSignal): Promise<PurgeResult> {
   return apiRequest<PurgeResult>('/maintenance/purge', {
     method: 'POST',

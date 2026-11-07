@@ -174,6 +174,9 @@ pub fn build_router() -> Router {
                         .push(Router::with_path("golden/verify").post(maintenance::golden_verify))
                         .push(Router::with_path("comfy/reparse").post(maintenance::comfy_reparse))
                         .push(Router::with_path("purge").post(maintenance::purge_all))
+                        .push(Router::with_path("purge/database").post(maintenance::purge_database))
+                        .push(Router::with_path("purge/vectors").post(maintenance::purge_vectors))
+                        .push(Router::with_path("purge/media").post(maintenance::purge_media))
                         .push(Router::with_path("encoder/refresh").post(maintenance::encoder_refresh)),
                 ),
         )

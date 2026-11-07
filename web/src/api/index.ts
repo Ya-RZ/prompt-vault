@@ -42,4 +42,5 @@ export {
   resumeJob,
 } from './jobs';
 export type { JobListQuery } from './jobs';
-export { fetchFacets, fetchSize, fetchStats, purgeAll } from './stats';
+export { fetchFacets, fetchSize, fetchStats, purgeAll, purgeScope } from './stats';
+export type { PurgeScope } from './stats';
