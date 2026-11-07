@@ -311,6 +311,34 @@ export function SearchPage() {
 
   const modeMismatch = result !== null && result.effective_mode !== result.mode;
 
+  // 结果摘要：只留「条数 · 耗时」，其余细节收进 Tooltip，避免占一整行
+  const resultSummary = result ? (
+    <Tooltip
+      title={
+        <div>
+          <div>
+            请求模式 {result.mode} → 实际 {result.effective_mode}
+          </div>
+          {modeMismatch ? <div>稀疏向量不可用时 hybrid 会退化为 dense；要零模型成本请用 lexical</div> : null}
+          {result.query_image ? (
+            <div>
+              查询图 {result.query_image.resized ?? '—'} / {result.query_image.vision_tokens ?? '—'} tokens
+            </div>
+          ) : null}
+          {(result.warnings ?? []).map((warning) => (
+            <div key={warning}>{warning}</div>
+          ))}
+        </div>
+      }
+    >
+      <Text type="secondary" style={{ fontSize: 12, cursor: 'help', whiteSpace: 'nowrap' }}>
+        {result.total} 条 · {result.took_ms ?? '—'} ms
+        {modeMismatch ? ` · ${result.effective_mode}` : ''}
+        {(result.warnings ?? []).length > 0 ? ' · 有警告' : ''}
+      </Text>
+    </Tooltip>
+  ) : null;
+
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Card size="small" variant="outlined" styles={{ body: { padding: 12 } }}>
@@ -341,6 +369,7 @@ export function SearchPage() {
                 onChange={setSearchMode}
                 options={MODE_OPTIONS}
               />
+              {resultSummary}
             </Space>
           ) : (
             <Upload.Dragger
@@ -394,6 +423,7 @@ export function SearchPage() {
                 <Text>包含 NSFW</Text>
               </Space>
             </Tooltip>
+            {entry === 'image' ? resultSummary : null}
           </Space>
         </Space>
       </Card>
@@ -402,35 +432,6 @@ export function SearchPage() {
 
       {result ? (
         <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-          <Alert
-            type="success"
-            showIcon
-            title={`查询「${result.query}」共 ${result.total} 条 · took ${result.took_ms ?? '—'} ms`}
-            description={
-              <span>
-                请求模式 <Tag>{result.mode}</Tag> → 实际模式 <Tag>{result.effective_mode}</Tag>
-                {result.query_image
-                  ? ` · 查询图 resized ${result.query_image.resized ?? '—'} / vision_tokens ${
-                      result.query_image.vision_tokens ?? '—'
-                    }`
-                  : ''}
-              </span>
-            }
-          />
-
-          {modeMismatch ? (
-            <Alert
-              type="warning"
-              showIcon
-              title={`请求的 mode=${result.mode}，实际按 ${result.effective_mode} 执行`}
-              description="稀疏向量不可用时 hybrid 会自动退化为 dense。若需要零模型成本的检索，请改用 lexical 模式。"
-            />
-          ) : null}
-
-          {(result.warnings ?? []).map((warning) => (
-            <Alert key={warning} type="warning" showIcon title="检索警告" description={warning} />
-          ))}
-
           {result.items.length === 0 ? (
             <Card variant="outlined">
               <Empty description="没有命中结果" />
