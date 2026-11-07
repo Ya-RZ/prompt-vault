@@ -76,9 +76,9 @@ impl EncoderClient {
         self.mock
     }
 
-    /// 编码器是否能产出 BM25 稀疏向量：只有 mock 能，第三方 HTTP 只给稠密。
+    /// 稀疏向量已屏蔽：任何编码器都不再产出。
     pub fn sparse_capable(&self) -> bool {
-        self.mock
+        false
     }
 
     /// 编码能力是否可用：mock 恒可用，否则要有第三方客户端。
@@ -342,10 +342,10 @@ fn mock_encode(item: &EmbedInputItem, dim: usize) -> EncodeOutcome {
         item.image.as_deref().unwrap_or("")
     );
     let dense = mock_dense(&seed, dim);
-    let sparse = item.text.as_deref().map(mock_sparse);
     EncodeOutcome {
         dense,
-        sparse,
+        // 稀疏向量已屏蔽：mock 也不再产出
+        sparse: None,
         resized: item.image.as_ref().map(|_| "mock".to_string()),
         vision_tokens: item.image.as_ref().map(|_| 0),
         kind: Some(kind_of(item)),

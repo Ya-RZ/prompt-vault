@@ -125,7 +125,7 @@ impl<'a> Engine<'a> {
                     // 第三方 embedding 只给稠密向量，所以 hybrid 实际一直是 dense + lexical —— 如实说明，
                     // 别让调用方以为三路都跑了。
                     warnings.push(
-                        "第三方 embedding 不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"
+                        "稀疏向量已禁用：hybrid 实际是 dense + lexical（第三方 embedding 只提供稠密向量）"
                             .to_string(),
                     );
                     effective = "dense+lexical".to_string();

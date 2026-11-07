@@ -5,7 +5,6 @@ use salvo::prelude::*;
 use super::st;
 use crate::error::ApiError;
 use crate::search::{Engine, SearchQuery};
-use crate::types::EmbedInputItem;
 
 fn parse_nsfw(raw: Option<&str>) -> Option<bool> {
     match raw {
@@ -188,40 +187,9 @@ pub async fn similar_by_kind(
             res.render(Json(resp));
             Ok(())
         }
-        "sparse" => {
-            if !state.vectors.sparse_enabled() {
-                return Err(ApiError::sparse_unavailable(
-                    "本索引未启用稀疏向量（建 shard 时 --sparse=false）",
-                ));
-            }
-            let outcome = state
-                .encoder
-                .embed(vec![EmbedInputItem { text: Some(q.clone()), image: None }])
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| ApiError::encoder_error("编码器没有返回向量"))?;
-            let Some((indices, values)) = outcome.sparse.clone() else {
-                return Err(ApiError::sparse_unavailable(
-                    "第三方 embedding 只产出稠密向量，不产出 BM25 稀疏向量；请用 mode=lexical 或 hybrid",
-                ));
-            };
-            let hits = state
-                .vectors
-                .search_sparse(crate::vector::VEC_SPARSE_TEXT, &indices, &values, k, None)
-                .await?;
-            res.render(Json(serde_json::json!({
-                "query": q,
-                "mode": "sparse",
-                "items": hits.iter().map(|(id, score, payload)| serde_json::json!({
-                    "point_id": id,
-                    "score": score,
-                    "payload": payload,
-                })).collect::<Vec<_>>(),
-                "total": hits.len(),
-            })));
-            Ok(())
-        }
+        "sparse" => Err(ApiError::sparse_unavailable(
+            "稀疏检索已禁用：第三方 embedding 只提供稠密向量，请用 dense / lexical / hybrid",
+        )),
         _ => Err(ApiError::bad_request("vector_kind 只能是 dense 或 sparse")),
     }
 }

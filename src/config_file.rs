@@ -68,8 +68,6 @@ pub struct QdrantSection {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct IndexSection {
-    /// 是否启用 BM25 稀疏向量（只在建集合时生效）
-    pub sparse: Option<bool>,
     /// `scalar` | `turbo4` | `off`
     pub quantization: Option<String>,
     /// 编码作业是否编码图片（资产）；`false` = 只编码提示词
@@ -142,10 +140,6 @@ impl FileConfig {
 
     pub fn qdrant_collection(&self) -> String {
         non_empty(self.qdrant.collection.as_deref()).unwrap_or_else(|| "pv".to_string())
-    }
-
-    pub fn sparse(&self) -> bool {
-        self.index.sparse.unwrap_or(true)
     }
 
     pub fn quantization(&self) -> String {
@@ -235,8 +229,6 @@ url = "http://127.0.0.1:6334"
 collection = "pv"
 
 [index]
-# 是否启用 BM25 稀疏向量（只在建集合时生效）
-sparse = true
 # scalar | turbo4 | off
 quantization = "scalar"
 # 编码作业是否编码图片；false = 只编码提示词（以图搜图仍可用）

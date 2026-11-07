@@ -169,12 +169,6 @@ export function StatsPage() {
                 value={formatNumber(stats.vectors?.points)}
                 hint={`维度 ${formatNumber(stats.vectors?.dense_size)} · 量化 ${
                   stats.vectors?.quantization ?? '—'
-                } · 稀疏路 ${
-                  stats.vectors?.sparse_active
-                    ? '可用'
-                    : stats.vectors?.sparse_enabled
-                      ? '空（无写入）'
-                      : '关闭'
                 }`}
               />
             </Col>

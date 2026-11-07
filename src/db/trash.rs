@@ -162,24 +162,24 @@ impl Db {
 
     pub fn get_trash(&self, id: i64) -> ApiResult<Option<DeletedAssetRow>> {
         self.with_conn(|c| {
-            Ok(c.query_row(
+            c.query_row(
                 &format!("SELECT {TRASH_COLS} FROM deleted_asset WHERE id = ?1"),
                 [id],
                 DeletedAssetRow::from_row,
             )
-            .optional()?)
+            .optional()
         })
     }
 
     /// 导入过滤：同内容已经在回收站里。
     pub fn find_trash_by_hash(&self, hash: &str) -> ApiResult<Option<DeletedAssetRow>> {
         self.with_conn(|c| {
-            Ok(c.query_row(
+            c.query_row(
                 &format!("SELECT {TRASH_COLS} FROM deleted_asset WHERE hash = ?1 ORDER BY id DESC LIMIT 1"),
                 [hash],
                 DeletedAssetRow::from_row,
             )
-            .optional()?)
+            .optional()
         })
     }
 

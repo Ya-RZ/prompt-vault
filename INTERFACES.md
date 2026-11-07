@@ -34,7 +34,7 @@
 | `PAYLOAD_TOO_LARGE` | 413 | 图片超过 `[media] max_bytes` 上限 |
 | `ENCODER_ERROR` | 502 | 编码过程失败（模型加载/推理报错） |
 | `GOLDEN_FAILED` | 409 | 金标校验不通过，禁止开始导入/编码作业（当前后端恒 `unsupported`，不会走到这里） |
-| `SPARSE_UNAVAILABLE` | 501 | 稀疏路不可用（索引未启用稀疏，或编码器不产出 `sparse`）——**显式失败，不假装成功** |
+| `SPARSE_UNAVAILABLE` | 501 | 稀疏检索已禁用（第三方只产稠密向量）——**显式失败，不假装成功** |
 | `CONFLICT` | 409 | 作业状态冲突（如已完成的作业再次 resume） |
 | `INTERNAL` | 500 | 内部错误 |
 
@@ -94,7 +94,7 @@
 
 ### 1.6 已知限制（不静默降级）
 
-1. **不产出 sparse**：hybrid 实际是 dense + lexical，`warnings` 里显式说明；`SPARSE_UNAVAILABLE` 只在索引未启用稀疏或显式 `mode=sparse` 时出现。
+1. **稀疏向量已禁用**：不再创建 `sparse_*` 槽位、不再查询；hybrid 实际是 dense + lexical，显式 `mode=sparse` 返回 `SPARSE_UNAVAILABLE`。
 2. **`resized` / `vision_tokens` 为 `null`**：服务端预处理不可见。
 3. **视频不支持**：视频资产需要先抽帧或上传封面，再作为图片导入。
 4. **云端可能静默升级模型**：指纹只能钉住 `base_url + model + dim`，检索质量突变时先查服务商。
@@ -131,7 +131,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
 | --- | --- |
 | dense 点 id | `asset.id` 直接用作 point id（图片/视频）；提示词点 id = `prompt.id + 1_000_000_000` |
 | 向量名（稠密） | `image`（asset）/ `text`（prompt） |
-| 向量名（稀疏，预留） | `sparse_image` / `sparse_text`，`Modifier::Idf`（内置 BM25，开发文档 §6.1） |
+| 向量名（稀疏） | **已禁用**：不再创建 `sparse_*` 槽位（旧集合里的空槽位不影响） |
 | payload | `{"kind":"asset"|"prompt","row_id":1,"asset_id":1,"fingerprint":"…","nsfw":false,"tags":["a","b"],"added_at_ms":1700000000000,"source":""}` |
 
 ---
@@ -169,7 +169,7 @@ Qdrant payload 约定（`collection` 名 `pv`，可用 `[qdrant] collection` 覆
   "index": {
     "fingerprint": "http|https://api.siliconflow.cn/v1|Qwen/Qwen3-VL-Embedding-8B|dim=4096|norm=l2|v1",
     "points": 1234, "assets": 1200, "prompts": 34,
-    "dense_size": 4096, "sparse_enabled": true, "quantization": "scalar-int8",
+    "dense_size": 4096, "sparse_enabled": false, "quantization": "scalar-int8",
     "dir": "http://127.0.0.1:6334#pv"
   },
   "db": { "path": "data/pv.sqlite", "assets": 1200, "pending_encode": 5 }
@@ -368,7 +368,7 @@ Qdrant 点照常删除。→ `{ "deleted": true, "id": 1, "vector_deleted": true
 
 ### `GET /api/search/text`
 
-参数：`q`(必需) `k`(20) `mode`(`hybrid`|`dense`|`lexical`，默认 `hybrid`；稀疏不可用时 `hybrid` 自动退化为 `dense` 并在 `warnings` 说明)
+参数：`q`(必需) `k`(20) `mode`(`hybrid`|`dense`|`lexical`，默认 `hybrid`；稀疏已禁用，`hybrid` 实际是 dense + lexical)
 `tag`(可重复) `nsfw`(false 默认 **过滤掉 nsfw**) `kind` `min_score` `with_vector=false`
 
 ```json
@@ -377,7 +377,7 @@ Qdrant 点照常删除。→ `{ "deleted": true, "id": 1, "vector_deleted": true
   "mode": "hybrid",
   "effective_mode": "dense",
   "took_ms": 12,
-  "warnings": ["第三方 embedding 不产出 BM25 稀疏向量：hybrid 实际是 dense + lexical，索引里的 sparse 向量名不参与召回"],
+  "warnings": ["稀疏向量已禁用：hybrid 实际是 dense + lexical"],
   "items": [ {
     "score": 0.87,
     "sources": ["dense"],

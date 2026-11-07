@@ -41,7 +41,7 @@ import { tagColor } from '../utils/tagColor';
 const { Text, Paragraph } = Typography;
 
 const MODE_OPTIONS: Array<{ value: SearchMode; label: string }> = [
-  { value: 'hybrid', label: 'hybrid（稠密+稀疏+词法）' },
+  { value: 'hybrid', label: 'hybrid（稠密+词法）' },
   { value: 'dense', label: 'dense（仅稠密向量）' },
   { value: 'lexical', label: 'lexical（纯词法，零模型成本）' },
 ];
@@ -125,7 +125,7 @@ function SearchResultCard({
       )}
 
       <div className="pv-meta-line" style={{ marginTop: 6 }}>
-        rank：dense {hit.rank?.dense ?? '—'} / sparse {hit.rank?.sparse ?? '—'} / lexical{' '}
+        rank：dense {hit.rank?.dense ?? '—'} / lexical{' '}
         {hit.rank?.lexical ?? '—'} / rrf {hit.rank?.rrf ?? '—'}
       </div>
     </Card>

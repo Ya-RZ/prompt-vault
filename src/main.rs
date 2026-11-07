@@ -75,7 +75,8 @@ async fn main() {
         thumb_dir: data_dir.join("thumbs"),
         export_dir: data_dir.join("exports"),
         dim: file_cfg.dim(),
-        sparse_enabled: file_cfg.sparse(),
+        // 稀疏向量已屏蔽：第三方 embedding 只产稠密，保留字段只为兼容旧配置
+        sparse_enabled: false,
         encode_images: file_cfg.encode_images(),
         quant: QuantMode::parse(&file_cfg.quantization()),
         mock: file_cfg.mock(),
