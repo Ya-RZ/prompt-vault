@@ -188,6 +188,17 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
     setSimilarError(null);
   }, [assetId]);
 
+  // 切换资产 / 重新打开时，把 Drawer 的滚动位置回到顶部
+  // （destroyOnHidden=false 会复用 DOM，不重置就会停在上一个资产的位置）
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      const body = document.querySelector('.pv-asset-drawer .ant-drawer-body');
+      if (body) body.scrollTop = 0;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [assetId, open]);
+
   useEffect(() => {
     if (!asset) return;
     setTagDraft(asset.tags ?? []);
@@ -572,6 +583,7 @@ export function AssetDetailDrawer({ assetId, open, onClose, onMutated }: AssetDe
       open={open}
       onClose={onClose}
       size={760}
+      rootClassName="pv-asset-drawer"
       title={asset ? asset.rel_path : assetId === null ? '资产详情' : `资产 #${assetId}`}
       destroyOnHidden={false}
     >
