@@ -88,6 +88,16 @@ export function getSimilarAssets(
   });
 }
 
+/** POST /api/assets/batch-delete —— 批量软删除（进回收站） */
+export function batchDeleteAssets(
+  ids: number[],
+): Promise<{
+  deleted: Array<{ id: number; trash_id: number }>;
+  errors: Array<{ id: number; code: string; message: string }>;
+}> {
+  return apiRequest('/assets/batch-delete', { method: 'POST', body: { ids } });
+}
+
 /** POST /api/assets/{id}/encode —— 单图手动编码，可选图片或正面提示词 */
 export function encodeAsset(
   id: number,

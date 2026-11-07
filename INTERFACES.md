@@ -307,6 +307,16 @@ Qdrant 点照常删除。→ `{ "deleted": true, "id": 1, "vector_deleted": true
 - 同内容的导入/上传会被回收站过滤（见 §6）
 - 需要永久删除请走回收站接口
 
+### `POST /api/assets/batch-delete`
+
+批量软删除（进回收站），单条失败不影响其余：
+
+```json
+{ "ids": [1, 2, 3] }
+```
+
+→ `{ "deleted": [{"id":1,"trash_id":1}], "errors": [{"id":2,"code":"NOT_FOUND","message":"…"}] }`；`ids` 为空或超过 500 个 → `400`。
+
 ### 回收站
 
 | 接口 | 说明 |

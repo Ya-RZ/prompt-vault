@@ -9,6 +9,7 @@ export type { ErrorPresentation, QueryValue, RequestOptions } from './client';
 
 export { fetchHealth } from './health';
 export {
+  batchDeleteAssets,
   createAssetPrompt,
   deleteAsset,
   encodeAsset,

@@ -103,6 +103,11 @@ pub fn build_router() -> Router {
                         .get(assets::list_assets)
                         // 需求 1：单图上传。必须排在 `{id}` 前面，Salvo 按注册顺序匹配
                         .push(Router::with_path("upload").post(upload::upload_asset))
+                        // 批量软删除（同样必须在 `{id}` 之前）
+                        .push(
+                            Router::with_path("batch-delete")
+                                .post(assets::batch_delete_assets),
+                        )
                         .push(
                             Router::with_path("{id}")
                                 .get(assets::get_asset)

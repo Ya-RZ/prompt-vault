@@ -13,6 +13,7 @@ import {
   Masonry,
   Modal,
   Pagination,
+  Popconfirm,
   Segmented,
   Select,
   Space,
@@ -27,6 +28,7 @@ import {
 import { useCallback, useMemo, useState } from 'react';
 
 import {
+  batchDeleteAssets,
   describeError,
   fetchFacets,
   listAssets,
@@ -98,6 +100,42 @@ export function AssetsPage() {
   const [encoded, setEncoded] = useState<TriState>('all');
   const [sort, setSort] = useState<AssetSort>('-added_at');
   const [view, setView] = useState<'grid' | 'table'>('grid');
+  // 多选模式：卡片/表格都能勾选，批量删除进回收站
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
+
+  const handleToggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return;
+    setBatchDeleting(true);
+    try {
+      const result = await batchDeleteAssets(Array.from(selectedIds));
+      const failed = result.errors.length;
+      message.success(
+        failed === 0
+          ? `已删除 ${result.deleted.length} 个资产（可在回收站恢复）`
+          : `已删除 ${result.deleted.length} 个，失败 ${failed} 个`,
+      );
+      setSelectedIds(new Set());
+      handleMutated();
+    } catch (cause) {
+      message.error(describeError(cause).title);
+    } finally {
+      setBatchDeleting(false);
+    }
+  };
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [revealedIds, setRevealedIds] = useState<number[]>([]);
@@ -302,10 +340,13 @@ export function AssetsPage() {
             revealed={revealedIds.includes(asset.id)}
             onReveal={handleReveal}
             onOpen={handleOpen}
+            selectMode={selectMode}
+            selected={selectedIds.has(asset.id)}
+            onToggleSelect={handleToggleSelect}
           />
         ),
       })),
-    [items, revealedIds, handleReveal, handleOpen],
+    [items, revealedIds, handleReveal, handleOpen, selectMode, selectedIds],
   );
 
   return (
@@ -379,6 +420,33 @@ export function AssetsPage() {
               { value: 'table', icon: <TableOutlined />, label: '表格' },
             ]}
           />
+          <Button
+            type={selectMode ? 'primary' : 'default'}
+            onClick={() => {
+              setSelectMode((prev) => !prev);
+              setSelectedIds(new Set());
+            }}
+          >
+            {selectMode ? '退出选择' : '批量选择'}
+          </Button>
+          {selectMode ? (
+            <Space size={8}>
+              <Text type="secondary">已选 {selectedIds.size} 项</Text>
+              <Popconfirm
+                title={`删除选中的 ${selectedIds.size} 个资产？`}
+                description="会移入回收站，可在「回收站」页面恢复。"
+                okText="删除"
+                okButtonProps={{ danger: true }}
+                cancelText="取消"
+                disabled={selectedIds.size === 0}
+                onConfirm={handleBatchDelete}
+              >
+                <Button danger disabled={selectedIds.size === 0} loading={batchDeleting}>
+                  批量删除
+                </Button>
+              </Popconfirm>
+            </Space>
+          ) : null}
           <Button icon={<ReloadOutlined />} onClick={handleMutated} loading={loading}>
             刷新
           </Button>
@@ -410,6 +478,14 @@ export function AssetsPage() {
           size="small"
           rowKey="id"
           columns={columns}
+          rowSelection={
+            selectMode
+              ? {
+                  selectedRowKeys: Array.from(selectedIds),
+                  onChange: (keys) => setSelectedIds(new Set(keys as number[])),
+                }
+              : undefined
+          }
           dataSource={items}
           pagination={false}
           loading={loading}

@@ -1,4 +1,4 @@
-import { Card, Tag, Tooltip, Typography } from 'antd';
+import { Card, Checkbox, Tag, Tooltip, Typography } from 'antd';
 
 import type { Asset } from '../api';
 import { formatBytes, formatDateTime } from '../utils/format';
@@ -31,6 +31,10 @@ export interface AssetCardProps {
   revealed: boolean;
   onReveal: (id: number) => void;
   onOpen: (asset: Asset) => void;
+  /** 多选模式：点击卡片切换选中，而不是打开详情 */
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: number) => void;
 }
 
 /**
@@ -41,7 +45,15 @@ export interface AssetCardProps {
  * - **点图片下方的信息区**（提示词/尺寸/标签）：直接打开详情，与模糊状态无关
  * 卡片上不展示资产 id 与文件路径（需求 3）。
  */
-export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps) {
+export function AssetCard({
+  asset,
+  revealed,
+  onReveal,
+  onOpen,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
+}: AssetCardProps) {
   const blurred = Boolean(asset.nsfw) && !revealed;
   const tags = asset.tags ?? [];
   const firstPrompt = asset.prompts?.[0]?.text ?? null;
@@ -71,15 +83,36 @@ export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps)
       styles={{ body: { padding: 10 } }}
       cover={
         // 图片区：模糊态由 CoverImage 拦截点击（stopPropagation）并解除模糊；
-        // 其余情况冒泡到这里打开详情。
-        <div onClick={() => onOpen(asset)}>
-          <CoverImage
-            src={asset.thumb_url}
-            alt="资产缩略图"
-            blurred={blurred}
-            aspectRatio={coverRatio(asset)}
-            onReveal={() => onReveal(asset.id)}
-          />
+        // 其余情况冒泡到这里打开详情（多选模式下改为切换选中）。
+        <div style={{ position: 'relative' }}>
+          <div
+            onClick={() => (selectMode ? onToggleSelect?.(asset.id) : onOpen(asset))}
+            style={selectMode && selected ? { outline: '2px solid #1677ff', outlineOffset: -2 } : undefined}
+          >
+            <CoverImage
+              src={asset.thumb_url}
+              alt="资产缩略图"
+              blurred={blurred}
+              aspectRatio={coverRatio(asset)}
+              onReveal={() => onReveal(asset.id)}
+            />
+          </div>
+          {selectMode ? (
+            <Checkbox
+              checked={selected}
+              onClick={(event) => event.stopPropagation()}
+              onChange={() => onToggleSelect?.(asset.id)}
+              style={{
+                position: 'absolute',
+                top: 8,
+                left: 8,
+                zIndex: 2,
+                background: '#fff',
+                borderRadius: 4,
+                padding: 2,
+              }}
+            />
+          ) : null}
         </div>
       }
     >

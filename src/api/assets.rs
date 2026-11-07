@@ -43,10 +43,32 @@ pub async fn get_asset(req: &mut Request, depot: &mut Depot, res: &mut Response)
 pub async fn delete_asset(req: &mut Request, depot: &mut Depot, res: &mut Response) -> Result<(), ApiError> {
     let state = st(depot)?.clone();
     let id = req.param::<i64>("id").ok_or_else(|| ApiError::bad_request("id 非法"))?;
+    let outcome = delete_asset_inner(&state, id).await?;
+    res.render(Json(DeletedResponse {
+        deleted: true,
+        id,
+        vector_deleted: outcome.vector_deleted,
+        file_deleted: outcome.file_moved,
+        trashed: true,
+        trash_id: Some(outcome.trash_id),
+    }));
+    Ok(())
+}
+
+pub(crate) struct DeleteOutcome {
+    pub trash_id: i64,
+    pub vector_deleted: bool,
+    pub file_moved: bool,
+}
+
+/// 软删除单个资产：文件移到回收站、删向量、整行迁移。批量删除复用同一逻辑。
+pub(crate) async fn delete_asset_inner(
+    state: &std::sync::Arc<crate::state::AppState>,
+    id: i64,
+) -> Result<DeleteOutcome, ApiError> {
     let row = state.db.asset_must_exist(id)?;
     let prompt_ids: Vec<i64> = state.db.prompts_for(id)?.iter().map(|p| p.id).collect();
 
-    // 1) 文件移到回收站（保留可恢复的能力）
     let trash_rel = trash_rel_path(&row);
     let src = state.cfg.media_path(&row.rel_path);
     let dst = state.cfg.data_dir.join(&trash_rel);
@@ -56,7 +78,6 @@ pub async fn delete_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
         false
     };
 
-    // 2) 向量两路一起删（开发文档 §13 第 7 条）
     let vector_deleted = state
         .vectors
         .delete_asset_and_prompts(id, &prompt_ids)
@@ -65,17 +86,57 @@ pub async fn delete_asset(req: &mut Request, depot: &mut Depot, res: &mut Respon
     let _ = state.vectors.optimize();
     let _ = state.vectors.flush();
 
-    // 3) 数据库整行迁移到回收站（含提示词）
     let trash_id = state.db.move_asset_to_trash(id, &trash_rel)?;
-
-    res.render(Json(DeletedResponse {
-        deleted: true,
-        id,
+    Ok(DeleteOutcome {
+        trash_id,
         vector_deleted,
-        file_deleted: file_moved,
-        trashed: true,
-        trash_id: Some(trash_id),
-    }));
+        file_moved,
+    })
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct BatchDeleteRequest {
+    pub ids: Vec<i64>,
+}
+
+/// POST /api/assets/batch-delete —— 批量软删除（逐条执行，单条失败不影响其余）
+#[handler]
+pub async fn batch_delete_assets(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+) -> Result<(), ApiError> {
+    let state = st(depot)?.clone();
+    let body: BatchDeleteRequest = req
+        .parse_json()
+        .await
+        .map_err(|e| ApiError::bad_request(format!("请求体解析失败: {e}")))?;
+    if body.ids.is_empty() {
+        return Err(ApiError::bad_request("ids 不能为空"));
+    }
+    if body.ids.len() > 500 {
+        return Err(ApiError::bad_request("一次最多删除 500 个资产"));
+    }
+
+    let mut deleted = Vec::new();
+    let mut errors = Vec::new();
+    for id in body.ids {
+        match delete_asset_inner(&state, id).await {
+            Ok(outcome) => deleted.push(serde_json::json!({
+                "id": id,
+                "trash_id": outcome.trash_id
+            })),
+            Err(e) => errors.push(serde_json::json!({
+                "id": id,
+                "code": e.code,
+                "message": e.message
+            })),
+        }
+    }
+    res.render(Json(serde_json::json!({
+        "deleted": deleted,
+        "errors": errors
+    })));
     Ok(())
 }
 
