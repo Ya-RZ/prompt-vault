@@ -45,6 +45,23 @@ export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps)
   const blurred = Boolean(asset.nsfw) && !revealed;
   const tags = asset.tags ?? [];
   const firstPrompt = asset.prompts?.[0]?.text ?? null;
+  // 编码状态四态：词（仅提示词向量）/ 图（仅图片向量）/ 词图 / 未编码
+  const imageEncoded = Boolean(asset.vector?.encoded);
+  const textEncoded = (asset.prompts ?? []).some((prompt) => prompt.encoded);
+  const encodedLabel = imageEncoded && textEncoded
+    ? '词图'
+    : imageEncoded
+      ? '图'
+      : textEncoded
+        ? '词'
+        : '未编码';
+  const encodedColor = imageEncoded && textEncoded
+    ? 'green'
+    : imageEncoded
+      ? 'blue'
+      : textEncoded
+        ? 'cyan'
+        : 'default';
 
   return (
     <Card
@@ -88,8 +105,8 @@ export function AssetCard({ asset, revealed, onReveal, onOpen }: AssetCardProps)
           ) : asset.kind === 'other' ? (
             <Tag style={{ marginInlineEnd: 0 }}>其他</Tag>
           ) : null}
-          <Tag color={asset.vector?.encoded ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>
-            {asset.vector?.encoded ? '已编码' : '未编码'}
+          <Tag color={encodedColor} style={{ marginInlineEnd: 0 }}>
+            {encodedLabel}
           </Tag>
           {asset.nsfw ? (
             <Tag color="red" style={{ marginInlineEnd: 0 }}>
